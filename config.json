@@ -19,6 +19,10 @@
   "cooldown_min": 4,
   "realert_edge_step": 0.005,
   "max_book_requests_per_cycle": 80,
+  "book_workers": 8,
+
+  "cache_league_sec": 120,
+  "cache_espn_sec": 40,
 
   "league_map": [
     ["premier-league", "soccer/eng.1", "soccer", "premier-league"],

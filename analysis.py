@@ -4,13 +4,16 @@ import difflib
 import json
 import re
 import unicodedata
+from functools import lru_cache
 
 
+@lru_cache(maxsize=4096)
 def _norm_name(s):
     s = unicodedata.normalize("NFKD", s or "").encode("ascii", "ignore").decode()
     return re.sub(r"[^a-z0-9 ]", "", s.lower()).strip()
 
 
+@lru_cache(maxsize=8192)
 def _sim(a, b):
     na, nb = _norm_name(a), _norm_name(b)
     if not na or not nb:

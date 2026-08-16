@@ -1,4 +1,5 @@
 """Вывод сигналов: консоль (цвет), опционально Telegram, лог signals.log (JSONL)."""
+import html
 import json
 import sys
 import urllib.request
@@ -31,7 +32,12 @@ def format_signal(sig):
 
 def send_telegram(token, chat_id, text):
     url = f"https://api.telegram.org/bot{token}/sendMessage"
-    body = json.dumps({"chat_id": chat_id, "text": text}).encode()
+    body = json.dumps({
+        "chat_id": chat_id,
+        "text": text,
+        "parse_mode": "HTML",
+        "disable_web_page_preview": True,
+    }).encode()
     req = urllib.request.Request(url, data=body,
                                  headers={"Content-Type": "application/json"})
     try:
@@ -52,7 +58,8 @@ class Notifier:
         sys.stdout.flush()
         self._log(sig)
         if self.telegram and self.telegram.get("token") and self.telegram.get("chat_id"):
-            plain = (f"[{sig['type']}] {sig['side']} — {sig['title']}\n"
+            plain = (f"[{sig['type']}] {html.escape(str(sig['side']))} — "
+                     f"{html.escape(str(sig['title']))}\n"
                      f"ask {sig['ask']:.3f} × ${sig['usd']:.0f}  "
                      f"edge +{sig['edge']*100:.2f}%\n"
                      f"https://polymarket.com/event/{sig['event_slug']}")

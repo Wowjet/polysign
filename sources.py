@@ -2,10 +2,19 @@
 import json
 import time
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 
-HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) polysign/1.0"}
-ESPN_HEADERS = {"User-Agent": "Mozilla/5.0"}  # ESPN режет нестандартные UA
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) polysign/1.0",
+    "Accept": "application/json",
+}
+ESPN_HEADERS = {
+    "User-Agent": "Mozilla/5.0",
+    "Accept": "application/json",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Referer": "https://www.espn.com/",
+}
 GAMMA = "https://gamma-api.polymarket.com"
 CLOB = "https://clob.polymarket.com"
 ESPN = "https://site.api.espn.com/apis/site/v2/sports"
@@ -23,6 +32,14 @@ def http_json(url, timeout=20, retries=2, headers=None):
             if attempt < retries:
                 time.sleep(0.8 * (attempt + 1))
     raise last
+
+
+def parallel_map(fn, items, max_workers=8):
+    """Параллельный вызов fn по items; fn сам обязан ловить свои ошибки."""
+    if not items:
+        return []
+    with ThreadPoolExecutor(max_workers=min(max_workers, len(items))) as pool:
+        return list(pool.map(fn, items))
 
 
 # ---------------------------------------------------------------- Polymarket
@@ -47,6 +64,23 @@ def fetch_league_events(tag, limit=200):
     return events
 
 
+class LeagueCache:
+    """Список событий лиги меняется редко — перечитываем раз в ttl."""
+
+    def __init__(self, ttl_sec):
+        self.ttl = ttl_sec
+        self._data = {}
+
+    def get(self, tag):
+        now = time.monotonic()
+        hit = self._data.get(tag)
+        if hit and now - hit[0] < self.ttl:
+            return hit[1]
+        data = fetch_league_events(tag)
+        self._data[tag] = (now, data)
+        return data
+
+
 def parse_ts(s):
     if not s:
         return None
@@ -65,6 +99,17 @@ def fetch_book(token_id):
         ((float(r["price"]), float(r["size"])) for r in book.get("bids", [])),
         key=lambda x: -x[0])
     return {"asks": asks, "bids": bids}
+
+
+def fetch_books(tokens, max_workers=8):
+    """Стаканы пачкой параллельно; ошибки -> None для токена."""
+    def one(tok):
+        try:
+            return tok, fetch_book(tok)
+        except Exception:  # noqa: BLE001
+            return tok, None
+
+    return dict(parallel_map(one, list(tokens), max_workers))
 
 
 # -------------------------------------------------------------------- ESPN
@@ -97,13 +142,18 @@ def _norm_game(ev):
 
 
 def fetch_espn_games(espn_code, now=None):
-    """Игры лиги за вчера и сегодня (по UTC-датам), дедуп по id."""
+    """Сетка лиги: текущий день ESPN + вчера и сегодня по UTC-датам.
+
+    Запрос без dates на части CDN отдаёт полную текущую сетку, которую
+    dates-фильтр иногда теряет, поэтому объединяем все три источника.
+    """
     now = now or datetime.now(timezone.utc)
-    days = [(now - timedelta(days=1)).strftime("%Y%m%d"), now.strftime("%Y%m%d")]
+    days = ["", (now - timedelta(days=1)).strftime("%Y%m%d"), now.strftime("%Y%m%d")]
     games, seen = [], set()
     for day in days:
+        q = f"?dates={day}" if day else ""
         try:
-            data = http_json(f"{ESPN}/{espn_code}/scoreboard?dates={day}",
+            data = http_json(f"{ESPN}/{espn_code}/scoreboard{q}",
                              timeout=15, retries=1, headers=ESPN_HEADERS)
         except Exception:  # noqa: BLE001
             continue
@@ -112,5 +162,21 @@ def fetch_espn_games(espn_code, now=None):
             if gid not in seen:
                 seen.add(gid)
                 games.append(_norm_game(ev))
-        time.sleep(0.15)
     return games
+
+
+class EspnCache:
+    """Счёт обновляется десятками секунд — кэшируем чуть меньше интервала опроса."""
+
+    def __init__(self, ttl_sec):
+        self.ttl = ttl_sec
+        self._data = {}
+
+    def get(self, espn_code):
+        now = time.monotonic()
+        hit = self._data.get(espn_code)
+        if hit and now - hit[0] < self.ttl:
+            return hit[1]
+        data = fetch_espn_games(espn_code)
+        self._data[espn_code] = (now, data)
+        return data
