@@ -1,0 +1,23 @@
+name: keepalive
+
+# GitHub отключает schedule-воркфлоу после 60 дней неактивности репозитория.
+# Пустой коммит раз в месяц этого не даёт.
+
+on:
+  schedule:
+    - cron: "0 6 1 * *" # 1-е число, 06:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  activity:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: |
+          git config user.name polysign-bot
+          git config user.email bot@users.noreply.github.com
+          git commit --allow-empty -m "keepalive"
+          git push

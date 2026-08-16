@@ -1,0 +1,42 @@
+name: polysign-bot
+
+# Бесплатный 24/7 хостинг на публичном репозитории:
+# cron каждые 30 минут запускает новый раннер, он отменяет предыдущий
+# (concurrency), поэтому бот крутится непрерывно. Сигналы бот сам
+# коммитит в signals.log (POLYSIGN_AUTO_COMMIT=1).
+
+on:
+  schedule:
+    - cron: "*/30 * * * *" # UTC
+  workflow_dispatch:
+
+concurrency:
+  group: polysign-bot
+  cancel-in-progress: true
+
+jobs:
+  bot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Запуск бота (~35 минут)
+        run: timeout 2100 python -u bot.py
+        env:
+          POLYSIGN_AUTO_COMMIT: "1"
+
+      - name: Финальный коммит лога
+        if: always()
+        run: |
+          git add signals.log || true
+          git -c user.name=polysign-bot -c user.email=bot@users.noreply.github.com \
+            commit -m "signals update (final)" || true
+          git pull --rebase --autostash || true
+          git push || true

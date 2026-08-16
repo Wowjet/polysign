@@ -1,0 +1,50 @@
+{
+  "poll_interval_sec": 25,
+  "lookback_hours": 8,
+  "forward_hours": 14,
+
+  "min_edge": 0.004,
+  "min_liquidity_usd": 30,
+  "max_ask": 0.999,
+
+  "book_only_sweep": {
+    "enabled": true,
+    "min_bid": 0.9,
+    "max_ask": 0.995
+  },
+
+  "neg_risk_scan": true,
+  "neg_risk_min_volume24h": 200,
+
+  "cooldown_min": 4,
+  "realert_edge_step": 0.005,
+  "max_book_requests_per_cycle": 80,
+
+  "league_map": [
+    ["premier-league", "soccer/eng.1", "soccer", "premier-league"],
+    ["efl-championship", "soccer/eng.2", "soccer", "efl-championship"],
+    ["soccer-el1", "soccer/eng.3", "soccer", "soccer-el1"],
+    ["soccer-el2", "soccer/eng.4", "soccer", "soccer-el2"],
+    ["la-liga-2", "soccer/esp.2", "soccer", "la-liga-2"],
+    ["la-liga", "soccer/esp.1", "soccer", "la-liga"],
+    ["serie-a", "soccer/ita.1", "soccer", "sea"],
+    ["serie-b", "soccer/ita.2", "soccer", "serie-b"],
+    ["bundesliga-2", "soccer/ger.2", "soccer", "bundesliga-2"],
+    ["bundesliga", "soccer/ger.1", "soccer", "bundesliga"],
+    ["ligue-1", "soccer/fra.1", "soccer", "ligue-1"],
+    ["ligue-2", "soccer/fra.2", "soccer", "ligue-2"],
+    ["primeira-liga", "soccer/por.1", "soccer", "primeira-liga"],
+    ["scottish-premiership", "soccer/sco.1", "soccer", "scottish-premiership"],
+    ["sweden-allsvenskan", "soccer/swe.1", "soccer", "sweden-allsvenskan"],
+    ["austria-bundesliga", "soccer/aut.1", "soccer", "austria-bundesliga"],
+    ["tur", "soccer/tur.1", "soccer", "tur"],
+    ["mlb", "baseball/mlb", "baseball", "mlb"],
+    ["nba", "basketball/nba", "basketball", "nba"],
+    ["nhl", "hockey/nhl", "hockey", "nhl"],
+    ["nfl", "football/nfl", "football", "nfl"]
+  ],
+
+  "telegram": null,
+
+  "log_file": "signals.log"
+}
