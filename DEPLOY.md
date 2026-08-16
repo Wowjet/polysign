@@ -30,6 +30,14 @@
 - Статистика зашедшего: `git pull && python review.py`.
 - Остановка на сервере: Actions → polysign-bot → кнопка Disable workflow.
 
+## Важно про push из локальной копии
+
+Серверный бот сам коммитит `signals.log`, поэтому перед своим push всегда
+делай `git pull --rebase --autostash` и **не коммить локальный signals.log**
+(локальный бот с 2026-08-16 пишет в `signals.local.log`, он в .gitignore).
+Если пуш отклоняют повторно — проверь, что не застрял rebase:
+`git rebase --abort`, затем `git pull --rebase` заново.
+
 ## Telegram (настоятельно рекомендую до пуша)
 
 На сервере консоль никто не смотрит — сигналы должны приходить в телегу:
