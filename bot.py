@@ -11,6 +11,7 @@
 """
 import argparse
 import os
+import socket
 import subprocess
 import sys
 import time
@@ -225,6 +226,17 @@ def maybe_autocommit(log_file):
         pass
 
 
+def acquire_single_instance(port=47891):
+    """Лок на локальном порту: второй экземпляр бота не стартует."""
+    s = socket.socket()
+    try:
+        s.bind(("127.0.0.1", port))
+        return s
+    except OSError:
+        print("polysign уже запущен (порт занят) — второй экземпляр выходим")
+        return None
+
+
 def main():
     parser = argparse.ArgumentParser(description="polysign — сигналы Polymarket sports")
     parser.add_argument("--once", action="store_true", help="один проход и выход")
@@ -232,6 +244,9 @@ def main():
     args = parser.parse_args()
 
     cfg = load_config(args.config)
+    lock = acquire_single_instance()
+    if lock is None:
+        sys.exit(0)
     notifier = Notifier(log_file=cfg["log_file"], telegram=cfg.get("telegram"))
     state = {}
 
