@@ -114,6 +114,10 @@ def estimate_p(game, side, sport):
 
     state = game.get("state")
     if state == "post":
+        # ESPN помечает перенесённые/отменённые игры как post — верить нельзя
+        detail = (game.get("detail") or "").lower()
+        if any(w in detail for w in ("postpon", "cancel", "abandon", "susp", "delay")):
+            return None
         if side == "draw":
             return 1.0 if hs == as_ else 0.0
         if hs == as_:
@@ -137,11 +141,11 @@ def estimate_p(game, side, sport):
             return None
         stoppage = "+" in (game.get("clock") or "")
         if side == "draw":
-            if hs != as_:
+            # ничья считается решённой только в самом конце (90+);
+            # "45'+X" — это перерыв, до конца ещё полматча
+            if hs != as_ or not stoppage:
                 return None
-            if minute >= 88 or (minute >= 45 and stoppage):  # перерыв не считаем
-                return 0.90
-            return None
+            return 0.95 if minute >= 90 else None
         if leader_name is None or _sim(side, leader_name) < 0.72:
             return None
         if (diff >= 2 and minute >= 85) or (diff >= 3 and minute >= 70):
