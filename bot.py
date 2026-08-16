@@ -6,6 +6,9 @@
   [ARB]            сумма асков всех исходов < 1 (негативный риск)
   [BOOK-ONLY]      стакан выглядит как «зашедшая ставка» без подтверждения счётом
 
+Стаканы читаются из живого вебсокета CLOB (push при каждом изменении);
+если вебсокет недоступен — автоматический REST-фолбэк.
+
 Запуск:  python bot.py          (цикл)
          python bot.py --once   (один проход, для проверки)
 """
@@ -20,6 +23,7 @@ from datetime import datetime, timedelta, timezone
 import analysis
 import sources
 from notify import Notifier
+from ws_books import BookStream
 
 
 def load_config(path):
@@ -69,8 +73,7 @@ def rotate_log(path, max_bytes=5_000_000):
 
 
 class BookFetcher:
-    """Стаканы цикла: бюджет запросов к CLOB + мемо, чтобы токен
-    не запрашивался дважды за проход."""
+    """REST-фолбэк для стаканов: бюджет запросов к CLOB + мемо за проход."""
 
     def __init__(self, budget, workers):
         self.budget = budget
@@ -98,7 +101,7 @@ def _gamma_market(ev, market_slug):
     return {}
 
 
-def scan(cfg, notifier, state, caches):
+def scan(cfg, notifier, state, caches, stream=None):
     t0 = time.time()
     now = datetime.now(timezone.utc)
     window_lo = now - timedelta(hours=cfg["lookback_hours"])
@@ -140,28 +143,8 @@ def scan(cfg, notifier, state, caches):
     live_games = sum(1 for games in espn_cache.values() for g in games if g["state"] == "in")
     post_games = sum(1 for games in espn_cache.values() for g in games if g["state"] == "post")
 
-    books = BookFetcher(cfg["max_book_requests_per_cycle"], cfg.get("book_workers", 8))
-    min_edge, min_usd, max_ask = cfg["min_edge"], cfg["min_liquidity_usd"], cfg["max_ask"]
-    cooldown_sec = cfg["cooldown_min"] * 60
-    signals = []
-
-    def need_check(key, fp):
-        """Нужен ли запрос стакана: нет отпечатка, отпечаток изменился
-        или давно не проверяли (раз в кулдаун-окно)."""
-        prev = state.get(key)
-        if prev is None or prev.get("fp") != fp:
-            return True
-        return (now - prev.get("fp_ts", prev["ts"])).total_seconds() > cooldown_sec
-
-    def mark(key, fp, edge=None, alert=False):
-        prev = state.get(key, {})
-        state[key] = {
-            "ts": now if alert else prev.get("ts"),
-            "fp": fp,
-            "fp_ts": now,
-            "edge": edge if alert else prev.get("edge"),
-        }
-
+    # --- контекст по событиям + желаемые токены для вебсокета ------------
+    entries, desired = [], set()
     for ev in events:
         lg = analysis.league_for_series(ev.get("seriesSlug"), cfg["league_map"])
         teams = analysis.split_event_title(ev.get("title", ""))
@@ -171,66 +154,113 @@ def scan(cfg, notifier, state, caches):
         cands = analysis.ml_candidates(ev)
         if not cands:
             continue
+        entries.append((ev, lg, game, cands))
+        desired.update(c["token"] for c in cands)
+    if stream:
+        stream.set_tokens(list(desired)[: cfg.get("ws_max_tokens", 600)])
 
+    books = BookFetcher(cfg["max_book_requests_per_cycle"], cfg.get("book_workers", 8))
+    min_edge, min_usd, max_ask = cfg["min_edge"], cfg["min_liquidity_usd"], cfg["max_ask"]
+    cooldown_sec = cfg["cooldown_min"] * 60
+    signals = []
+
+    def live_book(token):
+        return stream.get(token) if stream else None
+
+    def need_check(key, fp):
+        """Нужен ли REST-запрос стакана: нет отпечатка, изменился
+        или давно не проверяли (раз в кулдаун-окно)."""
+        prev = state.get(key)
+        if prev is None or prev.get("fp") != fp:
+            return True
+        return (now - prev.get("fp_ts", prev["ts"])).total_seconds() > cooldown_sec
+
+    def mark(key, fp, edge=None, usd=None, alert=False):
+        prev = state.get(key, {})
+        state[key] = {
+            "ts": now if alert else prev.get("ts"),
+            "fp": fp,
+            "fp_ts": now,
+            "edge": edge if alert else prev.get("edge"),
+            "usd": usd if alert else prev.get("usd"),
+        }
+
+    def rest_book(token, fp):
+        """REST-запрос с префильтром отпечатков (когда ws не отдал снапшот)."""
+        if fp is not None and not need_check(token, fp):
+            return None
+        book = books.get([token])[0]
+        if book is not None and fp is not None:
+            mark(token, fp)
+        return book
+
+    for ev, lg, game, cands in entries:
         # --- сигналы по счёту (ESPN) -----------------------------------
         if game and game["state"] in ("in", "post"):
-            scored = []
             for cand in cands:
                 p = analysis.estimate_p(game, cand["side"], lg["sport"])
                 if p is None or p < 0.9:
                     continue
                 ga = _gamma_market(ev, cand["market_slug"]).get("bestAsk")
-                # префильтр: стакан бывает лишь чуть лучше gamma-аска
-                if ga is not None and p - ga < min_edge - 0.02:
-                    continue
                 fp = f"{ga}|{p}|{game['state']}"
-                if need_check(cand["token"], fp):
-                    scored.append((cand, p, fp))
-            if scored:
-                got = books.get([c[0]["token"] for c in scored])
-                for (cand, p, fp), book in zip(scored, got):
-                    ask = analysis.best_ask_usd(book) if book else None
-                    if ask and ask["price"] <= max_ask and p - ask["price"] >= min_edge \
-                            and ask["usd"] >= min_usd:
-                        signals.append({
-                            "type": "FINAL" if game["state"] == "post" and p == 1.0 else "LIVE-NEARFINAL",
-                            "title": ev["title"], "event_slug": ev["slug"],
-                            "market_slug": cand["market_slug"], "side": cand["side"],
-                            "token": cand["token"], "ask": ask["price"], "size": ask["size"],
-                            "usd": ask["usd"], "p": p, "edge": p - ask["price"],
-                            "detail": f"{game['home']['score']}:{game['away']['score']} "
-                                      f"{game['clock']} {lg['sport']}",
-                            "_fp": fp,
-                        })
-                    else:
-                        mark(cand["token"], fp)
+                book = live_book(cand["token"])
+                rest_used = False
+                if book is None:
+                    # REST-префильтр: стакан бывает лишь чуть лучше gamma-аска
+                    if ga is not None and p - ga < min_edge - 0.02:
+                        continue
+                    book = rest_book(cand["token"], fp)
+                    rest_used = True
+                ask = analysis.best_ask_usd(book) if book else None
+                if ask and ask["price"] <= max_ask and p - ask["price"] >= min_edge \
+                        and ask["usd"] >= min_usd:
+                    signals.append({
+                        "type": "FINAL" if game["state"] == "post" and p == 1.0 else "LIVE-NEARFINAL",
+                        "title": ev["title"], "event_slug": ev["slug"],
+                        "market_slug": cand["market_slug"], "side": cand["side"],
+                        "token": cand["token"], "ask": ask["price"], "size": ask["size"],
+                        "usd": ask["usd"], "p": p, "edge": p - ask["price"],
+                        "detail": f"{game['home']['score']}:{game['away']['score']} "
+                                  f"{game['clock']} {lg['sport']}",
+                        "_fp": fp if rest_used else None,
+                    })
 
         # --- негативный риск --------------------------------------------
         if cfg.get("neg_risk_scan"):
             vol = float(ev.get("volume24hr") or 0)
-            if vol >= cfg["neg_risk_min_volume24h"]:
+            snapshots = [live_book(c["token"]) for c in cands]
+            if stream and stream.healthy() and all(snapshots):
+                # живые снапшоты — проверяем всё без объёмного фильтра
+                asks = [analysis.best_ask_usd(s) for s in snapshots]
+                fp = None
+            elif vol >= cfg["neg_risk_min_volume24h"]:
                 gamma_asks = [_gamma_market(ev, c["market_slug"]).get("bestAsk") for c in cands]
-                if all(a is not None for a in gamma_asks):
+                if not all(a is not None for a in gamma_asks):
+                    asks, fp = [], None
+                else:
                     fp = round(sum(gamma_asks), 4)
                     key = ev["slug"] + "ARB"
+                    asks = []
                     if fp < 1 - min_edge + 0.02 and need_check(key, fp):
                         got = books.get([c["token"] for c in cands])
                         asks = [analysis.best_ask_usd(b) if b else None for b in got]
-                        if all(asks) and len(asks) >= 2:
-                            total = sum(a["price"] for a in asks)
-                            min_size = min(a["usd"] for a in asks)
-                            edge = 1.0 - total
-                            if edge >= min_edge and min_size >= min_usd:
-                                signals.append({
-                                    "type": "ARB", "title": ev["title"], "event_slug": ev["slug"],
-                                    "market_slug": ",".join(c["market_slug"] or "" for c in cands),
-                                    "side": f"все {len(asks)} исхода", "token": "",
-                                    "ask": total, "size": 0, "usd": min_size, "p": 1.0,
-                                    "edge": edge, "detail": f"сумма асков {total:.3f}",
-                                    "_fp": fp,
-                                })
-                            else:
-                                mark(key, fp)
+                        if not all(asks):
+                            mark(key, fp)
+            else:
+                asks, fp = [], None
+            if asks and all(asks) and len(asks) >= 2:
+                total = sum(a["price"] for a in asks)
+                min_size = min(a["usd"] for a in asks)
+                edge = 1.0 - total
+                if edge >= min_edge and min_size >= min_usd:
+                    signals.append({
+                        "type": "ARB", "title": ev["title"], "event_slug": ev["slug"],
+                        "market_slug": ",".join(c["market_slug"] or "" for c in cands),
+                        "side": f"все {len(asks)} исхода", "token": "",
+                        "ask": total, "size": 0, "usd": min_size, "p": 1.0,
+                        "edge": edge, "detail": f"сумма асков {total:.3f}",
+                        "_fp": fp,
+                    })
 
         # --- book-only: «зашедшая ставка» без ESPN ----------------------
         if cfg.get("book_only_sweep", {}).get("enabled") and not game:
@@ -240,9 +270,13 @@ def scan(cfg, notifier, state, caches):
                 bid, ask_g = mk.get("bestBid"), mk.get("bestAsk")
                 if bid is None or ask_g is None or bid < bo["min_bid"] or ask_g > bo["max_ask"]:
                     continue
-                if not need_check(cand["token"], ask_g):
-                    continue
-                book = books.get([cand["token"]])[0]
+                book = live_book(cand["token"])
+                rest_used = False
+                if book is None:
+                    if not need_check(cand["token"], ask_g):
+                        continue
+                    book = books.get([cand["token"]])[0]
+                    rest_used = True
                 a = analysis.best_ask_usd(book) if book else None
                 if a and a["usd"] >= min_usd and a["price"] <= bo["max_ask"]:
                     signals.append({
@@ -251,9 +285,9 @@ def scan(cfg, notifier, state, caches):
                         "token": cand["token"], "ask": a["price"], "size": a["size"],
                         "usd": a["usd"], "p": None,
                         "edge": 1.0 - a["price"], "detail": "без подтверждения счётом",
-                        "_fp": ask_g,
+                        "_fp": ask_g if rest_used else None,
                     })
-                else:
+                elif rest_used:
                     mark(cand["token"], ask_g)
 
     # --- дедуп и выдача ---------------------------------------------
@@ -262,16 +296,17 @@ def scan(cfg, notifier, state, caches):
         key = sig["token"] or (sig["event_slug"] + sig["type"])
         prev = state.get(key)
         prev_edge = prev.get("edge") if prev else None
+        prev_usd = prev.get("usd") if prev else None
         improved = prev_edge is not None and sig["edge"] - prev_edge >= cfg["realert_edge_step"]
+        # ликвидность ощутимо подросла — стоит сказать заново
+        grown = prev_usd is not None and sig["usd"] >= max(prev_usd * 1.5, prev_usd + 20)
         cooled = not prev or not prev.get("ts") or \
             (now - prev["ts"]).total_seconds() > cooldown_sec
-        if improved or cooled:
+        if improved or grown or cooled:
             notifier.emit(sig)
-            mark(key, sig.get("_fp"), edge=sig["edge"], alert=True)
+            mark(key, sig.get("_fp"), edge=sig["edge"], usd=sig["usd"], alert=True)
             emitted += 1
         else:
-            # сигнал валиден, но в кулдауне — обновляем отпечаток, чтобы
-            # стакан не перечитывался каждый цикл
             mark(key, sig.get("_fp"))
 
     if len(state) > 4000:
@@ -280,13 +315,14 @@ def scan(cfg, notifier, state, caches):
                   if (v.get("fp_ts") or v.get("ts") or now) < cutoff]:
             del state[k]
 
-    print(f"{now.strftime('%H:%M:%S')} | событий {len(events)} | ESPN {len(espn_cache)} лиг, "
-          f"live={live_games}, финалов={post_games} | стаканов {books.requested} | "
-          f"проход {time.time() - t0:.1f}с"
-          + ("" if signals else " | сигналов нет"))
+    ws = stream.stats() if stream else {"snapshots": 0, "wanted": 0}
+    ws_txt = f" | ws {ws['snapshots']}/{ws['wanted']}" if stream else ""
+    print(f"{now.strftime('%H:%M:%S')} | событий {len(entries)} | ESPN {len(espn_cache)} лиг, "
+          f"live={live_games}, финалов={post_games}{ws_txt} | REST-стаканов {books.requested} | "
+          f"проход {time.time() - t0:.1f}с" + ("" if signals else " | сигналов нет"))
     if signals and emitted == 0:
         print(f"  {len(signals)} сигналов в очереди, все в cooldown")
-    return len(events), emitted
+    return len(entries), emitted
 
 
 def main():
@@ -307,26 +343,34 @@ def main():
         "leagues": sources.LeagueCache(cfg.get("cache_league_sec", 120)),
         "espn": sources.EspnCache(cfg.get("cache_espn_sec", 40)),
     }
-    state = {}
 
+    stream = None
+    if cfg.get("ws_enabled", True):
+        stream = BookStream(on_log=lambda s: print(s, flush=True))
+        if not stream.start():
+            stream = None
+
+    state = {}
     print(f"polysign | min_edge={cfg['min_edge']*100:.2f}%  "
-          f"min_liq=${cfg['min_liquidity_usd']}  interval={cfg['poll_interval_sec']}s")
-    while True:
-        try:
-            scan(cfg, notifier, state, caches)
-        except KeyboardInterrupt:
-            print("\nstop")
-            break
-        except Exception as e:  # noqa: BLE001
-            print(f"  ! ошибка цикла: {e}", file=sys.stderr)
-        maybe_autocommit(cfg["log_file"])
-        if args.once:
-            break
-        try:
+          f"min_liq=${cfg['min_liquidity_usd']}  interval={cfg['poll_interval_sec']}s"
+          + ("  +websocket" if stream else "  (REST)"))
+    try:
+        while True:
+            try:
+                scan(cfg, notifier, state, caches, stream)
+            except Exception as e:  # noqa: BLE001
+                print(f"  ! ошибка цикла: {e}", file=sys.stderr)
+            maybe_autocommit(cfg["log_file"])
+            if args.once:
+                break
             time.sleep(cfg["poll_interval_sec"])
-        except KeyboardInterrupt:
-            print("\nstop")
-            break
+    except KeyboardInterrupt:
+        print("\nstop")
+    finally:
+        if stream:
+            stream.stop()
+        if lock:
+            lock.close()
 
 
 if __name__ == "__main__":

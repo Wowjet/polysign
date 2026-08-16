@@ -1,7 +1,10 @@
 {
-  "poll_interval_sec": 25,
+  "poll_interval_sec": 10,
   "lookback_hours": 8,
   "forward_hours": 14,
+
+  "ws_enabled": true,
+  "ws_max_tokens": 600,
 
   "min_edge": 0.004,
   "min_liquidity_usd": 30,

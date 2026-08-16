@@ -27,6 +27,9 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Зависимости
+        run: pip install websocket-client
+
       - name: Запуск бота (~35 минут)
         run: timeout 2100 python -u bot.py
         env:
