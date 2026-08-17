@@ -338,7 +338,11 @@ def main():
         if lock is None:
             sys.exit(0)
     rotate_log(cfg["log_file"])
-    notifier = Notifier(log_file=cfg["log_file"], telegram=cfg.get("telegram"))
+    # Telegram: на сервере креды приходят из GitHub Secrets, не из конфига
+    tg = cfg.get("telegram")
+    if os.environ.get("TG_TOKEN") and os.environ.get("TG_CHAT_ID"):
+        tg = {"token": os.environ["TG_TOKEN"], "chat_id": os.environ["TG_CHAT_ID"]}
+    notifier = Notifier(log_file=cfg["log_file"], telegram=tg)
     caches = {
         "leagues": sources.LeagueCache(cfg.get("cache_league_sec", 120)),
         "espn": sources.EspnCache(cfg.get("cache_espn_sec", 40)),

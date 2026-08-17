@@ -34,6 +34,8 @@ jobs:
         run: timeout 2100 python -u bot.py
         env:
           POLYSIGN_AUTO_COMMIT: "1"
+          TG_TOKEN: ${{ secrets.TG_TOKEN }}
+          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
 
       - name: Финальный коммит лога
         if: always()
