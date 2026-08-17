@@ -46,6 +46,8 @@
     ["austria-bundesliga", "soccer/aut.1", "soccer", "austria-bundesliga"],
     ["tur", "soccer/tur.1", "soccer", "tur"],
     ["mlb", "baseball/mlb", "baseball", "mlb"],
+    ["npb", "baseball/npb", "baseball", "npb"],
+    ["kbo", "baseball/kbo", "baseball", "kbo"],
     ["nba", "basketball/nba", "basketball", "nba"],
     ["nhl", "hockey/nhl", "hockey", "nhl"],
     ["nfl", "football/nfl", "football", "nfl"]
