@@ -124,7 +124,7 @@ def scan(cfg, notifier, state, caches, stream=None):
             if ts and window_lo <= ts <= window_hi:
                 events.append(ev)
                 in_window += 1
-        if in_window:
+        if in_window and row[1]:  # лиги без ESPN (null) идут только по стакану
             espn_needed.add(row[1])
 
     def espn_one(code):
