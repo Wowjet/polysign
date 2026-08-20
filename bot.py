@@ -220,6 +220,8 @@ def scan(cfg, notifier, state, caches, stream=None):
                         "market_slug": cand["market_slug"], "side": cand["side"],
                         "token": cand["token"], "ask": ask["price"], "size": ask["size"],
                         "usd": ask["usd"], "p": p, "edge": p - ask["price"],
+                        # ожидаемая прибыль: размер в шарах × эдж (usd/ask = число шаров)
+                        "profit": ask["usd"] / ask["price"] * (p - ask["price"]),
                         "detail": f"{game['home']['score']}:{game['away']['score']} "
                                   f"{game['clock']} {lg['sport']}",
                         "_fp": fp if rest_used else None,
@@ -258,7 +260,8 @@ def scan(cfg, notifier, state, caches, stream=None):
                         "market_slug": ",".join(c["market_slug"] or "" for c in cands),
                         "side": f"все {len(asks)} исхода", "token": "",
                         "ask": total, "size": 0, "usd": min_size, "p": 1.0,
-                        "edge": edge, "detail": f"сумма асков {total:.3f}",
+                        "edge": edge, "profit": min_size * edge,
+                        "detail": f"сумма асков {total:.3f}",
                         "_fp": fp,
                     })
 
@@ -279,12 +282,14 @@ def scan(cfg, notifier, state, caches, stream=None):
                     rest_used = True
                 a = analysis.best_ask_usd(book) if book else None
                 if a and a["usd"] >= min_usd and a["price"] <= bo["max_ask"]:
+                    edge_val = 1.0 - a["price"]
                     signals.append({
                         "type": "BOOK-ONLY", "title": ev["title"], "event_slug": ev["slug"],
                         "market_slug": cand["market_slug"], "side": cand["side"],
                         "token": cand["token"], "ask": a["price"], "size": a["size"],
                         "usd": a["usd"], "p": None,
-                        "edge": 1.0 - a["price"], "detail": "без подтверждения счётом",
+                        "edge": edge_val, "profit": a["usd"] * edge_val,
+                        "detail": "без подтверждения счётом",
                         "_fp": ask_g if rest_used else None,
                     })
                 elif rest_used:
@@ -342,7 +347,10 @@ def main():
     tg = cfg.get("telegram")
     if os.environ.get("TG_TOKEN") and os.environ.get("TG_CHAT_ID"):
         tg = {"token": os.environ["TG_TOKEN"], "chat_id": os.environ["TG_CHAT_ID"]}
-    notifier = Notifier(log_file=cfg["log_file"], telegram=tg)
+    notifier = Notifier(
+        log_file=cfg["log_file"], telegram=tg,
+        sound=cfg.get("sound", False) and not args.once,
+    )
     caches = {
         "leagues": sources.LeagueCache(cfg.get("cache_league_sec", 120)),
         "espn": sources.EspnCache(cfg.get("cache_espn_sec", 40)),

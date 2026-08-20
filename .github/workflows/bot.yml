@@ -31,7 +31,7 @@ jobs:
         run: pip install websocket-client
 
       - name: Запуск бота (~35 минут)
-        run: timeout 2100 python -u bot.py
+        run: timeout 2100 python -u bot.py || true
         env:
           POLYSIGN_AUTO_COMMIT: "1"
           TG_TOKEN: ${{ secrets.TG_TOKEN }}
