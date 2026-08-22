@@ -152,11 +152,14 @@ class BookStream:
             to_add = self._want - self._subscribed
             to_del = self._subscribed - self._want
         if to_add:
-            # подписываемся пачками: большие списки (900+ токенов) одним
-            # фреймом сервер обрабатывает не полностью
+            # подписываемся пачками по 50 и с паузой: залпом все пачки (900+
+            # токенов подряд) сервер обрабатывает не полностью — снапшоты
+            # приходят лишь для первых ~100 и соединение потом умирает
             add = sorted(to_add)
             for i in range(0, len(add), 50):
                 ws.send(json.dumps({"assets_ids": add[i:i + 50], "type": "market"}))
+                if i + 50 < len(add):
+                    time.sleep(0.5)
             with self._lock:
                 self._subscribed |= to_add
         if to_del:
