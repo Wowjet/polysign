@@ -287,6 +287,18 @@ def scan(cfg, notifier, state, caches, stream=None):
                     })
 
         # --- book-only: «зашедшая ставка» без ESPN ----------------------
+        # Сюда попадаем, только если игра НЕ сматчилась со счётом ESPN
+        # (в отличие от финалов/лайва — там игра найдена). Причина важна:
+        #   * лига не покрыта ESPN (KBO и пр.) — счёта не будет никогда;
+        #   * матч пропал из сетки (CDN ESPN отдаёт её нестабильно — фид
+        #     моргает на минуты) — счёт, скорее всего, вот-вот вернётся.
+        # Второй случай безопаснее: матч скорее всего идёт и решается.
+        if lg is None:
+            no_score_reason = "лига не размечена в league_map"
+        elif lg.get("espn"):
+            no_score_reason = "матч пропал из сетки ESPN (фид моргает)"
+        else:
+            no_score_reason = f"лига {lg['tag']} не покрывается ESPN"
         if cfg.get("book_only_sweep", {}).get("enabled") and not game:
             bo = cfg["book_only_sweep"]
             for cand in cands:
@@ -310,7 +322,7 @@ def scan(cfg, notifier, state, caches, stream=None):
                         "token": cand["token"], "ask": a["price"], "size": a["size"],
                         "usd": a["usd"], "p": None,
                         "edge": edge_val, "profit": a["usd"] * edge_val,
-                        "detail": "без подтверждения счётом",
+                        "detail": f"без подтверждения счётом · {no_score_reason}",
                         "depth": depth_text(book, bo["max_ask"]),
                         "_fp": ask_g if rest_used else None,
                     })
