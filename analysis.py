@@ -234,6 +234,98 @@ def take_plan(book, p, min_edge, max_levels=5):
             "profit": shares * p - usd}
 
 
+def outcome_groups(ev):
+    """Полные группы взаимоисключающих исходов события (для негативного риска).
+
+    Кроме классического moneyline у Polymarket на футболе есть группы
+    «кто вёл в 1-м тайме», «кто выиграет 2-й тайм» и т.п.: ровно один
+    исход группы случается, значит сумма асков группы < 1 — arb.
+    Возвращает [{name, cands: [{side, token, market_slug}]}].
+    """
+    groups = {}
+
+    def add(group, side, token, slug):
+        groups.setdefault(group, []).append(
+            {"side": side, "token": token, "market_slug": slug})
+
+    for mk in ev.get("markets", []):
+        if mk.get("closed") or not mk.get("active"):
+            continue
+        q = (mk.get("question") or "").strip()
+        toks = _tokens(mk)
+        if not toks:
+            continue
+        if q.startswith("Will ") and (" win on " in q or " end in a draw?" in q):
+            side = "draw" if " end in a draw?" in q else \
+                q[len("Will "):].split(" win on ")[0].strip()
+            add("победитель", side, toks[0], mk.get("slug"))
+        elif "at halftime" in q.lower():
+            ql = q.lower()
+            if "draw at halftime" in ql or " end in a draw" in ql:
+                side = "draw"
+            else:
+                side = q.split(" leading")[0].strip() if " leading" in q else q[:40]
+            add("1-й тайм", side, toks[0], mk.get("slug"))
+        elif "second half" in q.lower():
+            ql = q.lower()
+            if "win the second half" in ql:
+                side = q.split(" to win")[0].strip()
+                add("2-й тайм", side, toks[0], mk.get("slug"))
+            elif "second half draw" in ql:
+                add("2-й тайм", "draw", toks[0], mk.get("slug"))
+    # группой считаем только полные тройки (дом/ничья/гости)
+    return [{"name": g, "cands": c} for g, c in groups.items() if len(c) >= 3]
+
+
+def arb_take_plan(books, min_edge, max_levels=8):
+    """Максимальный «набор» ARB по ГЛУБИНЕ стаканов всех исходов.
+
+    Набор = по 1 шару каждого исхода, выплата $1 при любом исходе матча.
+    Идём по уровням асков каждого исхода, пока средняя цена набора
+    ≤ 1 − min_edge. Возвращает {n, spend, profit, avg, orders} или None.
+    """
+    # границы n, на которых средняя цена набора меняется: концы уровней
+    bounds = {0}
+    for b in books:
+        run = 0
+        for _, size in b["asks"][:max_levels]:
+            run += size
+            bounds.add(int(run))
+    best = None
+    for n in sorted(bounds):
+        if n <= 0:
+            continue
+        spend = 0.0
+        ok = True
+        for b in books:
+            cost = _cum_cost(b, n, max_levels)
+            if cost is None:  # в этом исходе меньше n шаров доступно
+                ok = False
+                break
+            spend += cost
+        if not ok or spend > n * (1 - min_edge):
+            break
+        best = n
+    if not best:
+        return None
+    spend = sum(_cum_cost(b, best, max_levels) for b in books)
+    profit = best - spend
+    return {"n": best, "spend": spend, "profit": profit,
+            "avg": spend / best if best else 0.0}
+
+
+def _cum_cost(book, n, max_levels=8):
+    """Стоимость покупки ровно n шаров по уровням аска (или None, если мало)."""
+    left, cost = n, 0.0
+    for price, size in book["asks"][:max_levels]:
+        take = min(left, size)
+        cost += take * price
+        left -= take
+        if left <= 0:
+            return cost
+    return None
+
+
 def league_for_series(series_slug, mapping):
     """mapping: [[series_prefix, espn_code, sport, poly_tag], ...]."""
     if not series_slug:

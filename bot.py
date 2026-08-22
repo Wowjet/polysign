@@ -152,6 +152,24 @@ def market_link(event_slug, market_slug):
     return f"https://polymarket.com/event/{event_slug}"
 
 
+def _group_pending(name, game):
+    """Спутниковая группа («1-й тайм», «2-й тайм») ещё НЕ решена?
+
+    Гвард от ложных арбитражей: после свистка в тайме котировки решённого
+    рынка могут висеть устаревшими, и сумма асков «случайно» даст < 1.
+    Поэтому тайм-группу сканируем только до её determining-момента.
+    """
+    if game is None or game.get("state") == "pre":
+        return True
+    if game.get("state") == "post":
+        return False
+    per = str(game.get("period") or "")
+    minute = analysis._soccer_minute(game.get("clock"))
+    if name == "1-й тайм":
+        return per in ("1H", "1", "PERIOD 1") or (minute is not None and minute < 45)
+    return True  # «2-й тайм» решается только с финальным свистком
+
+
 def scan(cfg, notifier, state, caches, stream=None, sports=None):
     t0 = time.time()
     now = datetime.now(timezone.utc)
@@ -219,10 +237,16 @@ def scan(cfg, notifier, state, caches, stream=None, sports=None):
         else:
             game = sports_game
         cands = analysis.ml_candidates(ev)
-        if not cands:
+        groups = analysis.outcome_groups(ev)
+        if not cands and not groups:
             continue
-        entries.append((ev, lg, game, cands))
+        entries.append((ev, lg, game, cands, groups))
         desired.update(c["token"] for c in cands)
+        # токены групп для негативного риска — тоже в вебсокет. Спутниковые
+        # события («... - Halftime Result») несут свои группы: таймы и пр.
+        for grp in groups:
+            if grp["name"] == "победитель" or _group_pending(grp["name"], game):
+                desired.update(c["token"] for c in grp["cands"])
     if stream:
         stream.set_tokens(list(desired)[: cfg.get("ws_max_tokens", 600)])
 
@@ -261,7 +285,7 @@ def scan(cfg, notifier, state, caches, stream=None, sports=None):
             mark(token, fp)
         return book
 
-    for ev, lg, game, cands in entries:
+    for ev, lg, game, cands, groups in entries:
         # --- сигналы по счёту (ESPN или спортивный фид Polymarket) --------
         if game and game["state"] in ("in", "post"):
             # вид спорта: из league_map, а для неразмеченных лиг — из фида
@@ -300,61 +324,80 @@ def scan(cfg, notifier, state, caches, stream=None, sports=None):
                         "_fp": fp if rest_used else None,
                     })
 
-        # --- негативный риск --------------------------------------------
+        # --- негативный риск: по ВСЕМ полным группам исходов события -------
+        # Кроме «победителя» арбитражируются «1-й тайм» и «2-й тайм»: в группе
+        # ровно один исход случается, значит сумма асков < 1 = гарантированный
+        # профит. У ARB свои пороги (arb_min_edge/arb_min_usd): гарантия
+        # позволяет брать края поменьше, чем для рискованных сигналов.
         if cfg.get("neg_risk_scan"):
+            arb_edge = cfg.get("arb_min_edge", min_edge)
+            arb_usd = cfg.get("arb_min_usd", min_usd)
             vol = float(ev.get("volume24hr") or 0)
-            snapshots = [live_book(c["token"]) for c in cands]
-            if stream and stream.healthy() and all(snapshots):
-                # живые снапшоты — проверяем всё без объёмного фильтра
-                asks = [analysis.best_ask_usd(s) for s in snapshots]
+            for grp in groups:
+                gc = grp["cands"]
+                if grp["name"] != "победитель" and not _group_pending(grp["name"], game):
+                    continue
+                snapshots = [live_book(c["token"]) for c in gc]
                 fp = None
-            elif vol >= cfg["neg_risk_min_volume24h"]:
-                gamma_asks = [_gamma_market(ev, c["market_slug"]).get("bestAsk") for c in cands]
-                if not all(a is not None for a in gamma_asks):
-                    asks, fp = [], None
-                else:
+                if stream and stream.healthy() and all(snapshots):
+                    # живые снапшоты — проверяем всё без объёмного фильтра
+                    asks = [analysis.best_ask_usd(s) for s in snapshots]
+                elif grp["name"] == "победитель" and vol >= cfg["neg_risk_min_volume24h"]:
+                    # REST-путь только для «победителя» (гамма-префильтр суммы)
+                    gamma_asks = [_gamma_market(ev, c["market_slug"]).get("bestAsk") for c in gc]
+                    if not all(a is not None for a in gamma_asks):
+                        continue
                     fp = round(sum(gamma_asks), 4)
                     key = ev["slug"] + "ARB"
-                    asks = []
-                    if fp < 1 - min_edge + 0.02 and need_check(key, fp):
-                        got = books.get([c["token"] for c in cands])
-                        asks = [analysis.best_ask_usd(b) if b else None for b in got]
-                        if not all(asks):
-                            mark(key, fp)
-            else:
-                asks, fp = [], None
-            if asks and all(asks) and len(asks) >= 2:
+                    if fp >= 1 - arb_edge + 0.02 or not need_check(key, fp):
+                        continue
+                    got = books.get([c["token"] for c in gc])
+                    asks = [analysis.best_ask_usd(b) if b else None for b in got]
+                    if not all(asks):
+                        mark(key, fp)
+                else:
+                    continue
+                if not (asks and all(asks) and len(asks) >= 2):
+                    continue
                 total = sum(a["price"] for a in asks)
                 min_size = min(a["usd"] for a in asks)
                 edge = 1.0 - total
-                if edge >= min_edge and min_size >= min_usd:
-                    # План захода: «набор» = по 1 шару КАЖДОГО исхода.
-                    # Цена набора = сумма асков (0.990), выплата при ЛЮБОМ
-                    # исходе = $1 — профит гарантирован. Сколько наборов
-                    # соберём, решает самый тонкий из стаканов (по шарам).
-                    n = int(min(a["size"] for a in asks))
-                    spend = sum(n * a["price"] for a in asks)
+                if edge < arb_edge or min_size < arb_usd:
+                    continue
+                # Глубокий план: берём уровни аска каждого исхода, пока средняя
+                # цена набора остаётся ≤ 1 − arb_edge (больше $ на событие,
+                # чем только лучшие аски). Требует живых снапшотов.
+                plan = None
+                if stream and stream.healthy() and all(snapshots):
+                    plan = analysis.arb_take_plan(snapshots, arb_edge)
+                n_best = int(min(a["size"] for a in asks))
+                if plan and plan["n"] > n_best:
+                    n, spend, profit = plan["n"], plan["spend"], plan["profit"]
+                else:
+                    n, spend = n_best, sum(n_best * a["price"] for a in asks)
                     profit = n - spend
-                    take_text = (f"ЗАБРАТЬ {n} наборов (набор = по 1 ш. каждого исхода): "
-                                 f"вложить ${spend:.0f} → гарантированно ${n} → "
-                                 f"профит +${profit:.2f} (+{profit / spend * 100:.1f}%)")
-                    # каждый исход — отдельный ордер на своей странице рынка
-                    orders = " | ".join(
-                        f"{c['side']}: {a['price']:.3f}×{n} ш. ≈ ${n * a['price']:.0f}"
-                        for c, a in zip(cands, asks))
-                    links = [f"{c['side']} → {market_link(ev['slug'], c['market_slug'])}"
-                             for c in cands]
-                    signals.append({
-                        "type": "ARB", "title": ev["title"], "event_slug": ev["slug"],
-                        "market_slug": ",".join(c["market_slug"] or "" for c in cands),
-                        "side": f"все {len(asks)} исхода", "token": "",
-                        "ask": total, "size": 0, "usd": min_size, "p": 1.0,
-                        "edge": edge, "profit": profit,
-                        "detail": f"сумма асков {total:.3f}",
-                        "take_text": take_text, "take_levels": orders, "links": links,
-                        "take_usd": round(spend, 2), "take_profit": round(profit, 2),
-                        "_fp": fp,
-                    })
+                take_text = (f"ЗАБРАТЬ {n} наборов (набор = по 1 ш. каждого исхода): "
+                             f"вложить ${spend:.0f} → гарантированно ${n} → "
+                             f"профит +${profit:.2f} (+{profit / spend * 100:.1f}%)")
+                orders = " | ".join(
+                    f"{c['side']}: {a['price']:.3f}×{n} ш. ≈ ${n * a['price']:.0f}"
+                    for c, a in zip(gc, asks))
+                links = [f"{c['side']} → {market_link(ev['slug'], c['market_slug'])}"
+                         for c in gc]
+                side = f"все {len(asks)} исхода" if grp["name"] == "победитель" \
+                    else f"{grp['name']}: все {len(asks)} исхода"
+                signals.append({
+                    "type": "ARB", "group": grp["name"],
+                    "title": ev["title"], "event_slug": ev["slug"],
+                    "market_slug": ",".join(c["market_slug"] or "" for c in gc),
+                    "side": side, "token": "",
+                    "ask": total, "size": 0, "usd": min_size, "p": 1.0,
+                    "edge": edge, "profit": profit,
+                    "detail": f"сумма асков {total:.3f}",
+                    "take_text": take_text, "take_levels": orders, "links": links,
+                    "take_usd": round(spend, 2), "take_profit": round(profit, 2),
+                    "_fp": fp,
+                })
 
         # --- book-only: «зашедшая ставка» без счёта ----------------------
         # Сюда попадаем, только если игра НЕ сматчилась ни со счётом ESPN,
@@ -405,7 +448,9 @@ def scan(cfg, notifier, state, caches, stream=None, sports=None):
     # --- дедуп и выдача ---------------------------------------------
     emitted = 0
     for sig in signals:
-        key = sig["token"] or (sig["event_slug"] + sig["type"])
+        # у ARB токена нет — ключ включает группу («победитель»/«1-й тайм»/...),
+        # чтобы разные группы одного события дедупились независимо
+        key = sig["token"] or (sig["event_slug"] + sig["type"] + str(sig.get("group") or ""))
         prev = state.get(key)
         prev_edge = prev.get("edge") if prev else None
         prev_usd = prev.get("usd") if prev else None
