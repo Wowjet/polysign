@@ -105,15 +105,48 @@ def fetch_book(token_id):
     return {"asks": asks, "bids": bids}
 
 
+def _parse_book(book):
+    asks = sorted(
+        ((float(r["price"]), float(r["size"])) for r in book.get("asks", [])),
+        key=lambda x: x[0])
+    bids = sorted(
+        ((float(r["price"]), float(r["size"])) for r in book.get("bids", [])),
+        key=lambda x: -x[0])
+    return {"asks": asks, "bids": bids}
+
+
 def fetch_books(tokens, max_workers=8):
-    """Стаканы пачкой параллельно; ошибки -> None для токена."""
+    """Стаканы пачкой. Основной путь — один POST /books на всю пачку
+    (быстрее N запросов и не множит число вызовов API; работает без
+    авторизации, но требует браузерный User-Agent — с дефолтным urllib
+    CLOB отвечает 403). Если batch не вышло — запасной путь: по токену
+    параллельно. Ошибки -> None для токена.
+    """
+    tokens = list(tokens)
+    if not tokens:
+        return {}
+
     def one(tok):
         try:
             return tok, fetch_book(tok)
         except Exception:  # noqa: BLE001
             return tok, None
 
-    return dict(parallel_map(one, list(tokens), max_workers))
+    try:
+        body = json.dumps([{"token_id": t} for t in tokens]).encode()
+        req = urllib.request.Request(
+            f"{CLOB}/books", data=body,
+            headers={**HEADERS, "Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            data = json.load(resp)
+        out = {}
+        for item in data:
+            tok = item.get("asset_id")
+            if tok in tokens:  # сверяемся по asset_id, не по порядку
+                out[tok] = _parse_book(item)
+        return {t: out.get(t) for t in tokens}
+    except Exception:  # noqa: BLE001
+        return dict(parallel_map(one, tokens, max_workers))
 
 
 # -------------------------------------------------------------------- ESPN

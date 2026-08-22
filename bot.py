@@ -23,6 +23,7 @@ from datetime import datetime, timedelta, timezone
 import analysis
 import sources
 from notify import Notifier
+from sports_ws import SportsStream
 from ws_books import BookStream
 
 
@@ -151,7 +152,7 @@ def market_link(event_slug, market_slug):
     return f"https://polymarket.com/event/{event_slug}"
 
 
-def scan(cfg, notifier, state, caches, stream=None):
+def scan(cfg, notifier, state, caches, stream=None, sports=None):
     t0 = time.time()
     now = datetime.now(timezone.utc)
     window_lo = now - timedelta(hours=cfg["lookback_hours"])
@@ -200,7 +201,23 @@ def scan(cfg, notifier, state, caches, stream=None):
         teams = analysis.split_event_title(ev.get("title", ""))
         if not teams:
             continue
-        game = analysis.match_game(teams, espn_cache.get(lg["espn"], [])) if lg else None
+        # Три источника счёта, по убыванию приоритета:
+        #   1) спортивный фид Polymarket уже видит КОНЕЦ матча -> мгновенный
+        #      FINAL (ESPN узнаёт о финале на минуты позже);
+        #   2) ESPN: богаче всего — знает переносы/отмены (post-гвард в
+        #      estimate_p) и периоды, им доверяем для живых матчей;
+        #   3) живой счёт фида Polymarket для лиг, которых в ESPN нет
+        #      (KBO/NPB/...): хотя бы LIVE-оценка по минуте/счёту.
+        # Оба формата «игры» совместимы с analysis.estimate_p.
+        sports_game = sports.find_game(teams) if sports else None
+        espn_game = analysis.match_game(teams, espn_cache.get(lg["espn"], [])) \
+            if lg and lg.get("espn") else None
+        if sports_game and sports_game["state"] == "post":
+            game = sports_game
+        elif espn_game:
+            game = espn_game
+        else:
+            game = sports_game
         cands = analysis.ml_candidates(ev)
         if not cands:
             continue
@@ -245,10 +262,12 @@ def scan(cfg, notifier, state, caches, stream=None):
         return book
 
     for ev, lg, game, cands in entries:
-        # --- сигналы по счёту (ESPN) -----------------------------------
+        # --- сигналы по счёту (ESPN или спортивный фид Polymarket) --------
         if game and game["state"] in ("in", "post"):
+            # вид спорта: из league_map, а для неразмеченных лиг — из фида
+            sport = lg["sport"] if lg else game.get("sport") or "soccer"
             for cand in cands:
-                p = analysis.estimate_p(game, cand["side"], lg["sport"])
+                p = analysis.estimate_p(game, cand["side"], sport)
                 if p is None or p < 0.9:
                     continue
                 ga = _gamma_market(ev, cand["market_slug"]).get("bestAsk")
@@ -273,7 +292,7 @@ def scan(cfg, notifier, state, caches, stream=None):
                         # ожидаемая прибыль: размер в шарах × эдж (usd/ask = число шаров)
                         "profit": ask["usd"] / ask["price"] * (p - ask["price"]),
                         "detail": f"{game['home']['score']}:{game['away']['score']} "
-                                  f"{game['clock']} {lg['sport']}",
+                                  f"{game['clock']} {sport}",
                         "depth": depth_text(book, max_ask),
                         # p=1.0 (FINAL) — профит гарантирован; p<1 — матожидание
                         **(take_sig_fields(book, p, min_edge) or {}),
@@ -337,19 +356,18 @@ def scan(cfg, notifier, state, caches, stream=None):
                         "_fp": fp,
                     })
 
-        # --- book-only: «зашедшая ставка» без ESPN ----------------------
-        # Сюда попадаем, только если игра НЕ сматчилась со счётом ESPN
-        # (в отличие от финалов/лайва — там игра найдена). Причина важна:
-        #   * лига не покрыта ESPN (KBO и пр.) — счёта не будет никогда;
-        #   * матч пропал из сетки (CDN ESPN отдаёт её нестабильно — фид
-        #     моргает на минуты) — счёт, скорее всего, вот-вот вернётся.
+        # --- book-only: «зашедшая ставка» без счёта ----------------------
+        # Сюда попадаем, только если игра НЕ сматчилась ни со счётом ESPN,
+        # ни со спортивным фидом Polymarket. Причина важна:
+        #   * лига не покрыта ESPN и фид молчит — счёта не будет никогда;
+        #   * оба фида моргнули/отстают — счёт, скорее всего, вот-вот придёт.
         # Второй случай безопаснее: матч скорее всего идёт и решается.
         if lg is None:
             no_score_reason = "лига не размечена в league_map"
         elif lg.get("espn"):
-            no_score_reason = "матч пропал из сетки ESPN (фид моргает)"
+            no_score_reason = "нет ни в ESPN, ни в фиде Polymarket (фиды моргают)"
         else:
-            no_score_reason = f"лига {lg['tag']} не покрывается ESPN"
+            no_score_reason = f"лига {lg['tag']} не покрывается ESPN, фид молчит"
         if cfg.get("book_only_sweep", {}).get("enabled") and not game:
             bo = cfg["book_only_sweep"]
             for cand in cands:
@@ -411,8 +429,11 @@ def scan(cfg, notifier, state, caches, stream=None):
 
     ws = stream.stats() if stream else {"snapshots": 0, "wanted": 0}
     ws_txt = f" | ws {ws['snapshots']}/{ws['wanted']}" if stream else ""
+    sp = sports.stats() if sports else None
+    sp_txt = f" | фид {sp['live']} живых/{sp['done']} финалов" if sp else ""
     print(f"{now.strftime('%H:%M:%S')} | событий {len(entries)} | ESPN {len(espn_cache)} лиг, "
-          f"live={live_games}, финалов={post_games}{ws_txt} | REST-стаканов {books.requested} | "
+          f"live={live_games}, финалов={post_games}{sp_txt}{ws_txt} | "
+          f"REST-стаканов {books.requested} | "
           f"проход {time.time() - t0:.1f}с" + ("" if signals else " | сигналов нет"))
     if signals and emitted == 0:
         print(f"  {len(signals)} сигналов в очереди, все в cooldown")
@@ -451,14 +472,22 @@ def main():
         if not stream.start():
             stream = None
 
+    # спортивный фид Polymarket: live-счёты всех матчей (см. sports_ws.py)
+    sports = None
+    if cfg.get("sports_ws_enabled", True):
+        sports = SportsStream(on_log=lambda s: print(s, flush=True))
+        if not sports.start():
+            sports = None
+
     state = {}
     print(f"polysign | min_edge={cfg['min_edge']*100:.2f}%  "
           f"min_liq=${cfg['min_liquidity_usd']}  interval={cfg['poll_interval_sec']}s"
-          + ("  +websocket" if stream else "  (REST)"))
+          + ("  +websocket" if stream else "  (REST)")
+          + ("  +sports-ws" if sports else ""))
     try:
         while True:
             try:
-                scan(cfg, notifier, state, caches, stream)
+                scan(cfg, notifier, state, caches, stream, sports)
             except Exception as e:  # noqa: BLE001
                 print(f"  ! ошибка цикла: {e}", file=sys.stderr)
             maybe_autocommit(cfg["log_file"])
@@ -468,6 +497,8 @@ def main():
     except KeyboardInterrupt:
         print("\nstop")
     finally:
+        if sports:
+            sports.stop()
         if stream:
             stream.stop()
         if lock:

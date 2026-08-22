@@ -4,6 +4,14 @@
 подписывается на moneyline-токены из окна сканирования и поддерживает
 снапшоты стаканов. Сканер читает их без единого REST-запроса; при обрыве
 связи снапшоты сбрасываются и бот автоматически уходит на REST-фолбэк.
+
+Особенности протокола (проверено 2026-08-22):
+  * текстовый фрейм "PING" каждые ~10с ПОСЛЕ подписки продлевает жизнь
+    соединения (сервер отвечает текстовым же "PONG"); но "PING" ДО подписки
+    сервер воспринимает как ошибку и рвёт соединение;
+  * отписка: {"assets_ids": [...], "type": "unsubscribe"} (плюс дублируем
+    "operation" — встречаются оба варианта формата). Если сервер отписку
+    проигнорировал, утечку снапшотов режет фильтр _want в _store_snapshot.
 """
 import json
 import threading
@@ -11,6 +19,7 @@ import time
 
 WS_URL = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
 SYNC_EVERY_SEC = 5
+PING_EVERY_SEC = 10
 
 
 def _levels(rows):
@@ -121,10 +130,16 @@ class BookStream:
         self._open = False
 
     def _sync_loop(self):
+        last_ping = 0.0
         while not self._stop.wait(SYNC_EVERY_SEC):
             if self._open and self._ws:
                 try:
                     self._sync_subs(self._ws)
+                    # keepalive: текстовый PING, но только если уже есть подписки
+                    # (PING до первой подписки рвёт соединение — см. докстринг)
+                    if self._subscribed and time.time() - last_ping >= PING_EVERY_SEC:
+                        self._ws.send("PING")
+                        last_ping = time.time()
                 except Exception:  # noqa: BLE001
                     pass
 
@@ -138,7 +153,10 @@ class BookStream:
                 self._subscribed |= to_add
         if to_del:
             try:
-                ws.send(json.dumps({"assets_ids": list(to_del), "type": "unsubscribe"}))
+                # дублируем оба известных формата отписки — серверу лишнее не вредит
+                ws.send(json.dumps({"assets_ids": list(to_del),
+                                    "type": "unsubscribe",
+                                    "operation": "unsubscribe"}))
             except Exception:  # noqa: BLE001
                 pass
             with self._lock:
@@ -164,6 +182,12 @@ class BookStream:
         token = ev.get("asset_id")
         if not token:
             return
+        # фильтр _want: если отписка не сработала, сервер продолжит слать
+        # старые токены — не пускаем их в снапшоты (раньше из-за этого
+        # счётчик снапшотов обгонял wanted, напр. «ws 321/230»)
+        with self._lock:
+            if token not in self._want:
+                return
         ms = ev.get("timestamp")
         try:
             ms = float(ms)
