@@ -240,12 +240,19 @@ def scan(cfg, notifier, state, caches, stream=None, sports=None):
         groups = analysis.outcome_groups(ev)
         if not cands and not groups:
             continue
+        # «Ближайшее» событие: уже идёт/закончилось или стартует в ближайшие
+        # 6 часов. Тайм-рынки дальних матчей обычно пустые (нет ни ордера —
+        # ws не пришлёт снапшот), подписываться на них и сканировать их нет смысла.
+        ev_ts = sources.parse_ts(ev.get("startTime"))
+        near = (ev_ts is not None and (ev_ts - now).total_seconds() <= 6 * 3600) or \
+            (game is not None and game["state"] in ("in", "post"))
         entries.append((ev, lg, game, cands, groups))
         desired.update(c["token"] for c in cands)
         # токены групп для негативного риска — тоже в вебсокет. Спутниковые
         # события («... - Halftime Result») несут свои группы: таймы и пр.
         for grp in groups:
-            if grp["name"] == "победитель" or _group_pending(grp["name"], game):
+            if grp["name"] == "победитель" or \
+                    (near and _group_pending(grp["name"], game)):
                 desired.update(c["token"] for c in grp["cands"])
     if stream:
         stream.set_tokens(list(desired)[: cfg.get("ws_max_tokens", 600)])
@@ -333,9 +340,14 @@ def scan(cfg, notifier, state, caches, stream=None, sports=None):
             arb_edge = cfg.get("arb_min_edge", min_edge)
             arb_usd = cfg.get("arb_min_usd", min_usd)
             vol = float(ev.get("volume24hr") or 0)
+            ev_ts = sources.parse_ts(ev.get("startTime"))
+            near = (ev_ts is not None and (ev_ts - now).total_seconds() <= 6 * 3600) or \
+                (game is not None and game["state"] in ("in", "post"))
             for grp in groups:
                 gc = grp["cands"]
-                if grp["name"] != "победитель" and not _group_pending(grp["name"], game):
+                # тайм-группы — только ближние матчи и только пока не решены
+                if grp["name"] != "победитель" and \
+                        not (near and _group_pending(grp["name"], game)):
                     continue
                 snapshots = [live_book(c["token"]) for c in gc]
                 fp = None
