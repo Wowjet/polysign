@@ -17,7 +17,9 @@ ESPN_HEADERS = {
 }
 GAMMA = "https://gamma-api.polymarket.com"
 CLOB = "https://clob.polymarket.com"
-ESPN = "https://site.api.espn.com/apis/site/v2/sports"
+# site.web.api (хост фронтенда espn.com) вместо site.api: датацентровые IP
+# (GitHub Actions) Akamai режет 403 на site.api, а web-хост отдаёт то же самое
+ESPN = "https://site.web.api.espn.com/apis/site/v2/sports"
 
 
 def http_json(url, timeout=20, retries=2, headers=None):
