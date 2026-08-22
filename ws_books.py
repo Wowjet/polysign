@@ -105,7 +105,11 @@ class BookStream:
             with self._lock:
                 self._subscribed = set()
             self._log("ws: соединение установлено")
-            self._sync_subs(ws)
+            # ВАЖНО: здесь НИЧЕГО не отправляем — все send идут только из
+            # потока _sync_loop. Раньше on_open звал _sync_subs, и два
+            # потока писали в сокет одновременно (подписка + PING) — фреймы
+            # калечились, сервер рвал соединение, снапшоты не успевали
+            # набраться. Sync-цикл подхватит подписку в первые 5 секунд.
 
         def on_close(ws, code, msg):
             self._open = False
