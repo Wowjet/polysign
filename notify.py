@@ -37,6 +37,7 @@ def format_signal(sig):
     edge_txt = _c(f"+{sig['edge'] * 100:.2f}%", GREEN)
     profit = sig.get("profit")
     profit_txt = _c(f"~${profit:.0f}", GREEN) if profit is not None else ""
+    depth = sig.get("depth")
     lines = [
         f"{head} {sig['side']} — {sig['title']}",
         (f"   ask {sig['ask']:.3f} × ${sig['usd']:.0f}   "
@@ -44,6 +45,9 @@ def format_signal(sig):
          f"{_c(sig['detail'], DIM)}"),
         f"   {_c('https://polymarket.com/event/' + sig['event_slug'], CYAN)}",
     ]
+    # котировки стакана (верхние уровни аска + лучший бид), если бот их приложил
+    if depth:
+        lines.insert(2, f"   {_c(depth, DIM)}")
     return "\n".join(lines)
 
 
@@ -80,12 +84,13 @@ class Notifier:
         if self.telegram and self.telegram.get("token") and self.telegram.get("chat_id"):
             profit = sig.get("profit")
             profit_txt = f" | профит ~${profit:.0f}" if profit is not None else ""
+            depth_txt = f"\n{html.escape(str(sig['depth']))}" if sig.get("depth") else ""
             plain = (f"🎯 <b>[{html.escape(str(sig['type']))}]</b> "
                      f"{html.escape(str(sig['side']))}\n"
                      f"{html.escape(str(sig['title']))}\n"
                      f"ask {sig['ask']:.3f} × ${sig['usd']:.0f} | "
                      f"edge +{sig['edge']*100:.2f}%{profit_txt}\n"
-                     f"{html.escape(str(sig['detail']))}\n"
+                     f"{html.escape(str(sig['detail']))}{depth_txt}\n"
                      f"{datetime.now().strftime('%H:%M:%S')}\n"
                      f"https://polymarket.com/event/{sig['event_slug']}")
             send_telegram(self.telegram["token"], self.telegram["chat_id"], plain)
@@ -95,7 +100,7 @@ class Notifier:
             "ts": datetime.now().astimezone().isoformat(timespec="seconds"),
             **{k: sig.get(k) for k in ("type", "title", "event_slug", "market_slug",
                                        "side", "token", "ask", "size", "usd",
-                                       "p", "edge", "profit", "detail")},
+                                       "p", "edge", "profit", "detail", "depth")},
         }
         try:
             with open(self.log_file, "a", encoding="utf-8") as f:

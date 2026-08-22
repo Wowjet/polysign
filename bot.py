@@ -101,6 +101,26 @@ def _gamma_market(ev, market_slug):
     return {}
 
 
+def depth_text(book, max_price, max_levels=3):
+    """Живые котировки для сигнала: верхние уровни аска до max_price + лучший бид.
+
+    Зачем: «ask 0.981 × $984» — это только первый уровень; на самом деле
+    купить можно больше, но дороже (0.985×$180, 0.99×$520, ...). Бид рядом
+    с 1.0 подтверждает, что рынок и правда считает исход решённым
+    (в [BOOK-ONLY] это фактически единственное «подтверждение»).
+    """
+    if not book:
+        return None
+    # уровни аска в пределах цены, где ещё есть край (до max_price)
+    levels = [(p, p * s) for p, s in book["asks"] if p <= max_price]
+    total = sum(usd for _, usd in levels)
+    parts = ", ".join(f"{p:.3f}×${usd:.0f}" for p, usd in levels[:max_levels])
+    bid = book["bids"][0] if book["bids"] else None
+    bid_txt = f"bid {bid[0]:.3f}×${bid[0] * bid[1]:.0f}" if bid else "бидов нет"
+    more = f" (+${total - levels[0][1]:.0f} дальше)" if len(levels) > 1 else ""
+    return f"аск: {parts or '—'}{more} | {bid_txt}"
+
+
 def scan(cfg, notifier, state, caches, stream=None):
     t0 = time.time()
     now = datetime.now(timezone.utc)
@@ -224,6 +244,7 @@ def scan(cfg, notifier, state, caches, stream=None):
                         "profit": ask["usd"] / ask["price"] * (p - ask["price"]),
                         "detail": f"{game['home']['score']}:{game['away']['score']} "
                                   f"{game['clock']} {lg['sport']}",
+                        "depth": depth_text(book, max_ask),
                         "_fp": fp if rest_used else None,
                     })
 
@@ -290,6 +311,7 @@ def scan(cfg, notifier, state, caches, stream=None):
                         "usd": a["usd"], "p": None,
                         "edge": edge_val, "profit": a["usd"] * edge_val,
                         "detail": "без подтверждения счётом",
+                        "depth": depth_text(book, bo["max_ask"]),
                         "_fp": ask_g if rest_used else None,
                     })
                 elif rest_used:
