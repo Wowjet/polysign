@@ -28,13 +28,19 @@ def load_signals(path, last_n=None):
     return out
 
 
-def fetch_market(slug):
+def fetch_market(event_slug, market_slug):
+    """Итоговое состояние рынка. Читаем через /events: эндпоинт /markets
+    перестаёт отдавать закрытые рынки, а событие хранит их цены навсегда."""
     try:
-        data = sources.http_json(
-            f"https://gamma-api.polymarket.com/markets?slug={slug}", timeout=15, retries=1)
-        return data[0] if data else None
+        evs = sources.http_json(
+            f"https://gamma-api.polymarket.com/events?slug={event_slug}",
+            timeout=15, retries=1)
+        for mk in (evs[0] if evs else {}).get("markets", []):
+            if mk.get("slug") == market_slug:
+                return mk
     except Exception:  # noqa: BLE001
-        return None
+        pass
+    return None
 
 
 def side_price(mk, side):
@@ -76,7 +82,7 @@ def main():
     for _, s in sorted(uniq.items(), key=lambda kv: kv[1]["ts"]):
         slug = (s.get("market_slug") or "").split(",")[0]
         if slug not in mk_cache:
-            mk_cache[slug] = fetch_market(slug)
+            mk_cache[slug] = fetch_market(s.get("event_slug"), slug)
         mk = mk_cache[slug]
         sp = side_price(mk, s.get("side")) if mk else None
         if sp is None:
