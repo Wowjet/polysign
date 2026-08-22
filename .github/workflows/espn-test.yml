@@ -1,0 +1,17 @@
+name: espn-diag
+on: workflow_dispatch
+jobs:
+  diag:
+    runs-on: ubuntu-latest
+    steps:
+      - name: ESPN hosts check
+        run: |
+          for host in site.api.espn.com site.web.api.espn.com sports.core.api.espn.com; do
+            for path in "apis/site/v2/sports/soccer/eng.2/scoreboard" "apis/site/v2/sports/baseball/mlb/scoreboard"; do
+              code=$(curl -s -o /tmp/out.json -w "%{http_code}" --max-time 15 \
+                -H "User-Agent: Mozilla/5.0" -H "Accept: application/json" \
+                "https://$host/$path")
+              n=$(python3 -c "import json;print(len(json.load(open('/tmp/out.json')).get('events',[])))" 2>/dev/null || echo "?")
+              echo "$host $path -> HTTP $code, events=$n"
+            done
+          done
