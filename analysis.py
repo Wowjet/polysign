@@ -197,6 +197,29 @@ def best_ask_usd(book):
     return {"price": price, "size": size, "usd": price * size}
 
 
+def take_plan(book, p, min_edge, max_levels=5):
+    """Сколько денег можно забрать из стакана с краём не ниже min_edge.
+
+    Идём по уровням аска сверху вниз, берём уровень целиком, пока
+    p − price ≥ min_edge (глубже — край уже не ours). size в стакане —
+    это число шар (токенов), usd уровня = price × size.
+    Возвращает {levels: [(цена, $, шары)], usd, shares, avg, profit} или None.
+    profit = shares·p − расход: при p=1 это гарантия, при p<1 — матожидание.
+    """
+    levels = []
+    for price, size in book["asks"]:
+        if len(levels) >= max_levels or p - price < min_edge:
+            break
+        levels.append((price, price * size, size))
+    if not levels:
+        return None
+    usd = sum(l[1] for l in levels)
+    shares = sum(l[2] for l in levels)
+    return {"levels": levels, "usd": usd, "shares": shares,
+            "avg": usd / shares if shares else 0.0,
+            "profit": shares * p - usd}
+
+
 def league_for_series(series_slug, mapping):
     """mapping: [[series_prefix, espn_code, sport, poly_tag], ...]."""
     if not series_slug:

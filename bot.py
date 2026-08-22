@@ -121,6 +121,36 @@ def depth_text(book, max_price, max_levels=3):
     return f"аск: {parts or '—'}{more} | {bid_txt}"
 
 
+def take_sig_fields(book, p, min_edge):
+    """Готовые поля «плана захода» для одиночного сигнала (FINAL/LIVE/BOOK-ONLY).
+
+    Главная строка: ЗАБРАТЬ $X → профит ~$Y (+Z%) — сколько долларов можно
+    купить по всему стакану, пока край держится не ниже min_edge, и сколько
+    на этом заработаешь. levels — поуровневая раскладка для проверки глазами.
+    """
+    plan = analysis.take_plan(book, p, min_edge)
+    if not plan or plan["usd"] < 1:
+        return None
+    pct = plan["profit"] / plan["usd"] * 100 if plan["usd"] else 0
+    levels_txt = " · ".join(f"{p_:.3f}×${usd:.0f} (+${sh * p - usd:.0f})"
+                            for p_, usd, sh in plan["levels"])
+    return {
+        "take_text": (f"ЗАБРАТЬ ${plan['usd']:.0f} ({plan['shares']:.0f} ш. по "
+                      f"{plan['avg']:.3f}) → профит ~${plan['profit']:.0f} (+{pct:.1f}%)"),
+        "take_levels": levels_txt,
+        "take_usd": round(plan["usd"], 2),
+        "take_profit": round(plan["profit"], 2),
+    }
+
+
+def market_link(event_slug, market_slug):
+    """Ссылка на конкретный рынок события (для футбольных «Will X win»).
+    US-формат: рынок один и слаг обычно совпадает с событием — хватит /event/."""
+    if market_slug and market_slug != event_slug:
+        return f"https://polymarket.com/event/{event_slug}/{market_slug}"
+    return f"https://polymarket.com/event/{event_slug}"
+
+
 def scan(cfg, notifier, state, caches, stream=None):
     t0 = time.time()
     now = datetime.now(timezone.utc)
@@ -245,6 +275,9 @@ def scan(cfg, notifier, state, caches, stream=None):
                         "detail": f"{game['home']['score']}:{game['away']['score']} "
                                   f"{game['clock']} {lg['sport']}",
                         "depth": depth_text(book, max_ask),
+                        # p=1.0 (FINAL) — профит гарантирован; p<1 — матожидание
+                        **(take_sig_fields(book, p, min_edge) or {}),
+                        "url": market_link(ev["slug"], cand["market_slug"]),
                         "_fp": fp if rest_used else None,
                     })
 
@@ -276,13 +309,31 @@ def scan(cfg, notifier, state, caches, stream=None):
                 min_size = min(a["usd"] for a in asks)
                 edge = 1.0 - total
                 if edge >= min_edge and min_size >= min_usd:
+                    # План захода: «набор» = по 1 шару КАЖДОГО исхода.
+                    # Цена набора = сумма асков (0.990), выплата при ЛЮБОМ
+                    # исходе = $1 — профит гарантирован. Сколько наборов
+                    # соберём, решает самый тонкий из стаканов (по шарам).
+                    n = int(min(a["size"] for a in asks))
+                    spend = sum(n * a["price"] for a in asks)
+                    profit = n - spend
+                    take_text = (f"ЗАБРАТЬ {n} наборов (набор = по 1 ш. каждого исхода): "
+                                 f"вложить ${spend:.0f} → гарантированно ${n} → "
+                                 f"профит +${profit:.2f} (+{profit / spend * 100:.1f}%)")
+                    # каждый исход — отдельный ордер на своей странице рынка
+                    orders = " | ".join(
+                        f"{c['side']}: {a['price']:.3f}×{n} ш. ≈ ${n * a['price']:.0f}"
+                        for c, a in zip(cands, asks))
+                    links = [f"{c['side']} → {market_link(ev['slug'], c['market_slug'])}"
+                             for c in cands]
                     signals.append({
                         "type": "ARB", "title": ev["title"], "event_slug": ev["slug"],
                         "market_slug": ",".join(c["market_slug"] or "" for c in cands),
                         "side": f"все {len(asks)} исхода", "token": "",
                         "ask": total, "size": 0, "usd": min_size, "p": 1.0,
-                        "edge": edge, "profit": min_size * edge,
+                        "edge": edge, "profit": profit,
                         "detail": f"сумма асков {total:.3f}",
+                        "take_text": take_text, "take_levels": orders, "links": links,
+                        "take_usd": round(spend, 2), "take_profit": round(profit, 2),
                         "_fp": fp,
                     })
 
@@ -324,6 +375,10 @@ def scan(cfg, notifier, state, caches, stream=None):
                         "edge": edge_val, "profit": a["usd"] * edge_val,
                         "detail": f"без подтверждения счётом · {no_score_reason}",
                         "depth": depth_text(book, bo["max_ask"]),
+                        # BOOK-ONLY: считаем от p=1.0 — во что верит сам стакан
+                        # (бид ≥ min_bid); реальный исход может отличаться
+                        **(take_sig_fields(book, 1.0, min_edge) or {}),
+                        "url": market_link(ev["slug"], cand["market_slug"]),
                         "_fp": ask_g if rest_used else None,
                     })
                 elif rest_used:

@@ -37,17 +37,27 @@ def format_signal(sig):
     edge_txt = _c(f"+{sig['edge'] * 100:.2f}%", GREEN)
     profit = sig.get("profit")
     profit_txt = _c(f"~${profit:.0f}", GREEN) if profit is not None else ""
-    depth = sig.get("depth")
     lines = [
         f"{head} {sig['side']} — {sig['title']}",
+    ]
+    # план захода — главная строка: сколько забрать и сколько заработаешь
+    if sig.get("take_text"):
+        lines.append(_c(f"   💰 {sig['take_text']}", GREEN))
+    lines.append(
         (f"   ask {sig['ask']:.3f} × ${sig['usd']:.0f}   "
          f"p≈{p_txt}   edge {edge_txt}   профит {profit_txt}   "
-         f"{_c(sig['detail'], DIM)}"),
-        f"   {_c('https://polymarket.com/event/' + sig['event_slug'], CYAN)}",
-    ]
-    # котировки стакана (верхние уровни аска + лучший бид), если бот их приложил
+         f"{_c(sig['detail'], DIM)}"))
+    if sig.get("take_levels"):
+        lines.append(f"   {_c(sig['take_levels'], DIM)}")
+    depth = sig.get("depth")
     if depth:
-        lines.insert(2, f"   {_c(depth, DIM)}")
+        lines.append(f"   {_c(depth, DIM)}")
+    # ссылки: точные страницы рынков (для ARB — на каждый исход своя)
+    if sig.get("links"):
+        lines.extend(f"   {_c(l, CYAN)}" for l in sig["links"])
+    else:
+        url = sig.get("url") or ("https://polymarket.com/event/" + sig["event_slug"])
+        lines.append(f"   {_c(url, CYAN)}")
     return "\n".join(lines)
 
 
@@ -85,14 +95,25 @@ class Notifier:
             profit = sig.get("profit")
             profit_txt = f" | профит ~${profit:.0f}" if profit is not None else ""
             depth_txt = f"\n{html.escape(str(sig['depth']))}" if sig.get("depth") else ""
+            # план захода: сколько забрать и сколько заработаешь — первой строкой
+            take_txt = (f"\n💰 <b>{html.escape(str(sig['take_text']))}</b>"
+                        if sig.get("take_text") else "")
+            levels_txt = (f"\n{html.escape(str(sig['take_levels']))}"
+                          if sig.get("take_levels") else "")
+            # ARB даёт ссылку на каждый исход (отдельные ордера), одиночные — одну
+            if sig.get("links"):
+                link_txt = "\n".join(html.escape(l) for l in sig["links"])
+            else:
+                link_txt = html.escape(
+                    sig.get("url") or f"https://polymarket.com/event/{sig['event_slug']}")
             plain = (f"🎯 <b>[{html.escape(str(sig['type']))}]</b> "
                      f"{html.escape(str(sig['side']))}\n"
-                     f"{html.escape(str(sig['title']))}\n"
+                     f"{html.escape(str(sig['title']))}{take_txt}\n"
                      f"ask {sig['ask']:.3f} × ${sig['usd']:.0f} | "
                      f"edge +{sig['edge']*100:.2f}%{profit_txt}\n"
-                     f"{html.escape(str(sig['detail']))}{depth_txt}\n"
+                     f"{html.escape(str(sig['detail']))}{levels_txt}{depth_txt}\n"
                      f"{datetime.now().strftime('%H:%M:%S')}\n"
-                     f"https://polymarket.com/event/{sig['event_slug']}")
+                     f"{link_txt}")
             send_telegram(self.telegram["token"], self.telegram["chat_id"], plain)
 
     def _log(self, sig):
@@ -100,7 +121,8 @@ class Notifier:
             "ts": datetime.now().astimezone().isoformat(timespec="seconds"),
             **{k: sig.get(k) for k in ("type", "title", "event_slug", "market_slug",
                                        "side", "token", "ask", "size", "usd",
-                                       "p", "edge", "profit", "detail", "depth")},
+                                       "p", "edge", "profit", "detail", "depth",
+                                       "take_usd", "take_profit")},
         }
         try:
             with open(self.log_file, "a", encoding="utf-8") as f:
