@@ -250,9 +250,12 @@ def scan(cfg, notifier, state, caches, stream=None, sports=None):
         desired.update(c["token"] for c in cands)
         # токены групп для негативного риска — тоже в вебсокет. Спутниковые
         # события («... - Halftime Result») несут свои группы: таймы и пр.
+        # По умолчанию ВЫКЛЮЧЕНЫ: 3 ордера руками не успеть, включается
+        # конфигом arb_satellites (для автоисполнения или очень жирных).
         for grp in groups:
-            if grp["name"] == "победитель" or \
-                    (near and _group_pending(grp["name"], game)):
+            if grp["name"] == "победитель" or (
+                    cfg.get("arb_satellites") and near
+                    and _group_pending(grp["name"], game)):
                 desired.update(c["token"] for c in grp["cands"])
     if stream:
         stream.set_tokens(list(desired)[: cfg.get("ws_max_tokens", 600)])
@@ -345,9 +348,11 @@ def scan(cfg, notifier, state, caches, stream=None, sports=None):
                 (game is not None and game["state"] in ("in", "post"))
             for grp in groups:
                 gc = grp["cands"]
-                # тайм-группы — только ближние матчи и только пока не решены
-                if grp["name"] != "победитель" and \
-                        not (near and _group_pending(grp["name"], game)):
+                # тайм-группы — opt-in (arb_satellites): 3 ордера руками не
+                # успеть; включать имеет смысл с автоисполнением
+                if grp["name"] != "победитель" and not (
+                        cfg.get("arb_satellites")
+                        and near and _group_pending(grp["name"], game)):
                     continue
                 snapshots = [live_book(c["token"]) for c in gc]
                 fp = None
@@ -388,6 +393,10 @@ def scan(cfg, notifier, state, caches, stream=None, sports=None):
                 else:
                     n, spend = n_best, sum(n_best * a["price"] for a in asks)
                     profit = n - spend
+                # ARB руками оправдан только когда «очень доходно»: тройной
+                # ордер не успеть, мелочь типа +1% на $300 пропускаем
+                if profit < cfg.get("arb_min_profit", 0):
+                    continue
                 take_text = (f"ЗАБРАТЬ {n} наборов (набор = по 1 ш. каждого исхода): "
                              f"вложить ${spend:.0f} → гарантированно ${n} → "
                              f"профит +${profit:.2f} (+{profit / spend * 100:.1f}%)")
