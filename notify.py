@@ -32,6 +32,10 @@ def _beep():
 def format_signal(sig):
     color = GREEN if sig["type"] in ("FINAL", "ARB") else YELLOW
     head = _c(f"[{sig['type']}]", color)
+    if sig.get("fat"):
+        # «жирный» — профит по глубине стакана перешёл порог fat_profit:
+        # в потоке сигналов такие должны цеплять глаз первыми
+        head = "🔥 " + head
     p = sig.get("p")
     p_txt = "1.00" if p == 1.0 else f"{p:.2f}" if p is not None else "?"
     edge_txt = _c(f"+{sig['edge'] * 100:.2f}%", GREEN)
@@ -100,6 +104,8 @@ class Notifier:
                         if sig.get("take_text") else "")
             levels_txt = (f"\n{html.escape(str(sig['take_levels']))}"
                           if sig.get("take_levels") else "")
+            fat_txt = ("\n🔥🔥🔥 <b>ЖИРНЫЙ</b>"
+                       if sig.get("fat") else "")
             # ARB даёт ссылку на каждый исход (отдельные ордера), одиночные — одну
             if sig.get("links"):
                 link_txt = "\n".join(html.escape(l) for l in sig["links"])
@@ -107,7 +113,7 @@ class Notifier:
                 link_txt = html.escape(
                     sig.get("url") or f"https://polymarket.com/event/{sig['event_slug']}")
             plain = (f"🎯 <b>[{html.escape(str(sig['type']))}]</b> "
-                     f"{html.escape(str(sig['side']))}\n"
+                     f"{html.escape(str(sig['side']))}{fat_txt}\n"
                      f"{html.escape(str(sig['title']))}{take_txt}\n"
                      f"ask {sig['ask']:.3f} × ${sig['usd']:.0f} | "
                      f"edge +{sig['edge']*100:.2f}%{profit_txt}\n"
@@ -122,7 +128,7 @@ class Notifier:
             **{k: sig.get(k) for k in ("type", "title", "event_slug", "market_slug",
                                        "side", "token", "ask", "size", "usd",
                                        "p", "edge", "profit", "detail", "depth",
-                                       "take_usd", "take_profit")},
+                                       "take_usd", "take_profit", "fat")},
         }
         try:
             with open(self.log_file, "a", encoding="utf-8") as f:

@@ -315,10 +315,28 @@ def scan(cfg, notifier, state, caches, stream=None, sports=None):
                     book = rest_book(cand["token"], fp)
                     rest_used = True
                 ask = analysis.best_ask_usd(book) if book else None
-                if ask and ask["price"] <= max_ask and p - ask["price"] >= min_edge \
-                        and ask["usd"] >= min_usd:
+                if not ask:
+                    continue
+                fat_profit = cfg.get("fat_profit", 100)
+                final_done = game["state"] == "post" and p == 1.0
+                # «жирный финал»: игра закончена, p=1 — профит гарантирован,
+                # поэтому ради большой ликвидности берём и мелкие края
+                # (напр. 0.15% на $30k = $45 без риска), которые обычный
+                # фильтр min_edge/max_ask отсекал бы
+                take = take_sig_fields(book, p, min_edge)
+                if final_done and not take:
+                    take = take_sig_fields(book, 1.0, cfg.get("big_final_min_edge", 0.001))
+                take = take or {}
+                normal_ok = (ask["price"] <= max_ask and p - ask["price"] >= min_edge
+                             and ask["usd"] >= min_usd)
+                fat_ok = (final_done and take.get("take_profit", 0) >= fat_profit
+                          and ask["price"] <= cfg.get("big_final_max_ask", 0.9995))
+                if normal_ok or fat_ok:
+                    # пометка «жирный» — для любого сигнала с крупным профитом
+                    # по глубине: чтобы в потоке Telegram'а глаз цеплялся сразу
+                    fat = take.get("take_profit", 0) >= fat_profit
                     signals.append({
-                        "type": "FINAL" if game["state"] == "post" and p == 1.0 else "LIVE-NEARFINAL",
+                        "type": "FINAL" if final_done else "LIVE-NEARFINAL",
                         "title": ev["title"], "event_slug": ev["slug"],
                         "market_slug": cand["market_slug"], "side": cand["side"],
                         "token": cand["token"], "ask": ask["price"], "size": ask["size"],
@@ -329,7 +347,8 @@ def scan(cfg, notifier, state, caches, stream=None, sports=None):
                                   f"{game['clock']} {sport}",
                         "depth": depth_text(book, max_ask),
                         # p=1.0 (FINAL) — профит гарантирован; p<1 — матожидание
-                        **(take_sig_fields(book, p, min_edge) or {}),
+                        **take,
+                        "fat": fat,
                         "url": market_link(ev["slug"], cand["market_slug"]),
                         "_fp": fp if rest_used else None,
                     })
@@ -417,6 +436,7 @@ def scan(cfg, notifier, state, caches, stream=None, sports=None):
                     "detail": f"сумма асков {total:.3f}",
                     "take_text": take_text, "take_levels": orders, "links": links,
                     "take_usd": round(spend, 2), "take_profit": round(profit, 2),
+                    "fat": profit >= cfg.get("fat_profit", 100),
                     "_fp": fp,
                 })
 

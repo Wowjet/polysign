@@ -22,6 +22,9 @@
   "arb_min_usd": 20,
   "arb_min_profit": 30,
   "arb_satellites": false,
+  "fat_profit": 100,
+  "big_final_min_edge": 0.001,
+  "big_final_max_ask": 0.9995,
 
   "cooldown_min": 4,
   "realert_edge_step": 0.005,
