@@ -110,6 +110,10 @@ class SportsStream:
             crossed = min(analysis._sim(teams[0], names[1]),
                           analysis._sim(teams[1], names[0]))
             if direct >= 0.72 or crossed >= 0.72:
+                # зеркальный матч (дом события = гости фида) — разворачиваем,
+                # чтобы счёт в деталях сигнала шёл в порядке названия события
+                if crossed > direct:
+                    g = dict(g, home=g["away"], away=g["home"])
                 return g
         return None
 

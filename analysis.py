@@ -127,7 +127,21 @@ def estimate_p(game, side, sport):
     hn, an = game["home"]["name"], game["away"]["name"]
 
     def side_score(name):
-        return hs if _sim(name, hn) >= 0.72 else as_
+        """Счёт команды `name` — только если матчинг однозначный.
+
+        Гвард от «дерби»: Dundee United и Dundee FC дают почти одинаковое
+        сходство с обеими командами; без строгого сравнения проигрывающий
+        получал счёт победителя и бот сигнал на заведомый пролёт (0.01!).
+        """
+        sh, sa = _sim(name, hn), _sim(name, an)
+        if max(sh, sa) < 0.72 or abs(sh - sa) < 0.15:
+            return None
+        return hs if sh > sa else as_
+
+    def is_strictly(side_name, target, other):
+        """`side_name` совпадает с `target` уверенно сильнее, чем с `other`."""
+        return _sim(side_name, target) >= 0.72 and \
+            _sim(side_name, target) > _sim(side_name, other) + 0.1
 
     state = game.get("state")
     if state == "post":
@@ -139,16 +153,16 @@ def estimate_p(game, side, sport):
             return 1.0 if hs == as_ else 0.0
         if hs == as_:
             return 0.0
-        winner = hn if hs > as_ else an
-        return 1.0 if _sim(side, winner) >= 0.72 else 0.0
+        winner, loser = (hn, an) if hs > as_ else (an, hn)
+        return 1.0 if is_strictly(side, winner, loser) else 0.0
 
     if state != "in":
         return None
     diff = abs(hs - as_)
     if hs > as_:
-        leader_name = hn
+        leader_name, other_name = hn, an
     elif as_ > hs:
-        leader_name = an
+        leader_name, other_name = an, hn
     else:
         leader_name = None
 
@@ -163,7 +177,8 @@ def estimate_p(game, side, sport):
             if hs != as_ or not stoppage:
                 return None
             return 0.95 if minute >= 90 else None
-        if leader_name is None or _sim(side, leader_name) < 0.72:
+        # сторона должна быть лидером, причём однозначно (гвард дерби)
+        if leader_name is None or not is_strictly(side, leader_name, other_name):
             return None
         if (diff >= 2 and minute >= 85) or (diff >= 3 and minute >= 70):
             return 0.99
@@ -182,7 +197,7 @@ def estimate_p(game, side, sport):
             total = sec
         else:
             total = (reg_periods - period) * per_len + sec
-        if leader_name is None or _sim(side, leader_name) < 0.72:
+        if leader_name is None or not is_strictly(side, leader_name, other_name):
             return None
         if sport == "basketball":
             if diff >= 10 and total <= 120:
