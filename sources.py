@@ -17,8 +17,10 @@ ESPN_HEADERS = {
 }
 GAMMA = "https://gamma-api.polymarket.com"
 CLOB = "https://clob.polymarket.com"
-# site.web.api (хост фронтенда espn.com) вместо site.api: датацентровые IP
-# (GitHub Actions) Akamai режет 403 на site.api, а web-хост отдаёт то же самое
+# Хост ESPN — принципиально site.web.api (хост фронтенда espn.com), а не
+# site.api: Akamai режет 403 (а) с датацентровых IP — раннеры GitHub Actions
+# из-за этого вообще не видели счёта, (б) с запросов urllib на Python <= 3.12
+# (другой TLS-фингерпринт). web-хост отдаёт те же данные без блокировок.
 ESPN = "https://site.web.api.espn.com/apis/site/v2/sports"
 
 

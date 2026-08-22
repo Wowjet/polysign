@@ -44,6 +44,15 @@ def fetch_market(event_slug, market_slug):
 
 
 def side_price(mk, side):
+    """Итоговая цена исхода `side` в рынке (1.0 = исход случился, 0.0 = нет).
+
+    У Polymarket два формата moneyline-рынков, отсюда два пути поиска:
+      * US-спорт: один рынок с outcomes = [КомандаA, КомандаB] —
+        ищем цену прямо по имени команды;
+      * футбол: три рынка "Will X win on ...?" с outcomes = [Yes, No] —
+        бот всегда сигналит на Yes-токен (analysis.ml_candidates берёт
+        toks[0]), поэтому если команды в outcomes нет, берём цену "Yes".
+    """
     prices = mk.get("outcomePrices")
     outs = mk.get("outcomes")
     if isinstance(prices, str):
@@ -55,7 +64,8 @@ def side_price(mk, side):
     lowered = [str(o).lower() for o in outs]
     idx = next((i for i, o in enumerate(lowered) if o == str(side).lower()), None)
     if idx is None and "yes" in lowered:
-        # футбольный формат: три рынка "Will X win?", сигнал всегда на Yes-токен
+        # сторона в сигнале — название команды, а рынок футбольный (Yes/No):
+        # наш сигнал всегда означает "Yes" (команда выиграет / будет ничья)
         idx = lowered.index("yes")
     return float(prices[idx]) if idx is not None and idx < len(prices) else None
 
