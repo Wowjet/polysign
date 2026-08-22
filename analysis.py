@@ -55,6 +55,16 @@ def _tokens(mk):
     return raw
 
 
+def _loads(v):
+    """Gamma отдаёт списки (outcomes, clobTokenIds) JSON-строками — парсим."""
+    if isinstance(v, str):
+        try:
+            return json.loads(v)
+        except ValueError:
+            return v
+    return v
+
+
 def ml_candidates(ev):
     """Moneyline-рынки события в едином виде.
 
@@ -62,14 +72,18 @@ def ml_candidates(ev):
     Поддержаны два формата Polymarket:
       * US-спорт: один рынок, question == title, outcomes = [КомандаA, КомандаB]
       * футбол:   три рынка "Will X win on ...?" / "... end in a draw?", Yes = token[0]
+
+    ВАЖНО: outcomes приходит JSON-строкой ('["A","B"]') — без _loads ветка
+    US-формата падала на len(outcomes)==2, и MLB/NBA/NHL/NFL молча
+    выпадали из сканирования (найдено 2026-08-22).
     """
     out = []
-    title = ev.get("title", "")
+    title = (ev.get("title") or "").strip()
     for mk in ev.get("markets", []):
         if mk.get("closed") or not mk.get("active"):
             continue
-        outcomes = mk.get("outcomes") or []
-        q = mk.get("question", "")
+        outcomes = _loads(mk.get("outcomes")) or []
+        q = (mk.get("question") or "").strip()
         toks = _tokens(mk)
         if not toks:
             continue

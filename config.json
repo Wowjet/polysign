@@ -32,6 +32,7 @@
     ["efl-championship", "soccer/eng.2", "soccer", "efl-championship"],
     ["soccer-el1", "soccer/eng.3", "soccer", "soccer-el1"],
     ["soccer-el2", "soccer/eng.4", "soccer", "soccer-el2"],
+    ["soccer-enl", "soccer/eng.5", "soccer", "national-league"],
     ["la-liga-2", "soccer/esp.2", "soccer", "la-liga-2"],
     ["la-liga", "soccer/esp.1", "soccer", "la-liga"],
     ["serie-a", "soccer/ita.1", "soccer", "sea"],
