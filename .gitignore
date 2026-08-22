@@ -3,3 +3,11 @@ __pycache__/
 .venv/
 bot_run.log
 signals.local.log
+job.log
+job_final.log
+run_check.json
+rc.json
+jobs.json
+wf.json
+diag.zip
+run_check.log
