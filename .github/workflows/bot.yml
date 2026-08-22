@@ -25,7 +25,8 @@ jobs:
 
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          # 3.13 обязателен: запросы urllib с 3.12 ESPN (Akamai) режет 403
+          python-version: "3.13"
 
       - name: Зависимости
         run: pip install websocket-client

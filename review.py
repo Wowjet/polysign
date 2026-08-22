@@ -46,8 +46,11 @@ def side_price(mk, side):
         outs = json.loads(outs)
     if not prices or not outs:
         return None
-    idx = next((i for i, o in enumerate(outs)
-                if o.lower() == str(side).lower()), None)
+    lowered = [str(o).lower() for o in outs]
+    idx = next((i for i, o in enumerate(lowered) if o == str(side).lower()), None)
+    if idx is None and "yes" in lowered:
+        # футбольный формат: три рынка "Will X win?", сигнал всегда на Yes-токен
+        idx = lowered.index("yes")
     return float(prices[idx]) if idx is not None and idx < len(prices) else None
 
 
