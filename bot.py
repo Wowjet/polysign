@@ -495,8 +495,14 @@ def scan(cfg, notifier, state, caches, stream=None, sports=None):
                     book = books.get([cand["token"]])[0]
                     rest_used = True
                 a = analysis.best_ask_usd(book) if book else None
+                # бид-подтверждение берём из ЖИВОГО стакана ЭТОГО токена.
+                # gamma bestBid — атрибут рынка (первого исхода), в US-формате
+                # он принадлежит соседней стороне: из-за этого Hanwha (аутсайдер
+                # 0.07) проходил фильтр «бид 0.9» по биду победителя.
+                lb = book["bids"][0] if book and book["bids"] else None
                 if a and a["usd"] >= min_usd and a["price"] <= bo["max_ask"] \
-                        and _uncrossed(book, a["price"]):
+                        and _uncrossed(book, a["price"]) \
+                        and lb is not None and lb[0] >= bo["min_bid"]:
                     edge_val = 1.0 - a["price"]
                     signals.append({
                         "type": "BOOK-ONLY", "title": ev["title"], "event_slug": ev["slug"],
