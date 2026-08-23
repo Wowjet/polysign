@@ -229,8 +229,10 @@ def scan(cfg, notifier, state, caches, stream=None, sports=None):
         #   3) живой счёт фида Polymarket для лиг, которых в ESPN нет
         #      (KBO/NPB/...): хотя бы LIVE-оценка по минуте/счёту.
         # Оба формата «игры» совместимы с analysis.estimate_p.
+        ev_ts = sources.parse_ts(ev.get("startTime"))
         sports_game = sports.find_game(teams) if sports else None
-        espn_game = analysis.match_game(teams, espn_cache.get(lg["espn"], [])) \
+        # ev_ts не даёт сматчить вчерашнюю игру серии (MLB!) с событием
+        espn_game = analysis.match_game(teams, espn_cache.get(lg["espn"], []), ev_ts) \
             if lg and lg.get("espn") else None
         if sports_game and sports_game["state"] == "post":
             game = sports_game
@@ -245,7 +247,6 @@ def scan(cfg, notifier, state, caches, stream=None, sports=None):
         # «Ближайшее» событие: уже идёт/закончилось или стартует в ближайшие
         # 6 часов. Тайм-рынки дальних матчей обычно пустые (нет ни ордера —
         # ws не пришлёт снапшот), подписываться на них и сканировать их нет смысла.
-        ev_ts = sources.parse_ts(ev.get("startTime"))
         near = (ev_ts is not None and (ev_ts - now).total_seconds() <= 6 * 3600) or \
             (game is not None and game["state"] in ("in", "post"))
         entries.append((ev, lg, game, cands, groups))
@@ -321,6 +322,16 @@ def scan(cfg, notifier, state, caches, stream=None, sports=None):
                     continue
                 fat_profit = cfg.get("fat_profit", 100)
                 final_done = game["state"] == "post" and p == 1.0
+                if final_done:
+                    # Sanity по рынку: если матч РЕАЛЬНО закончился и наша
+                    # сторона победила, рынок это знает — бид победителя уже
+                    # у 1.0 (его скупают). Бид < 0.5 при p=1 почти наверняка
+                    # значит «смэтчили чужую игру / фид соврал» — пропускаем.
+                    # (Ловил серию MLB: вчерашний финал матчился к сегодняшнему
+                    # событию, рынок честно стоял 0.49, бот орал про +51%.)
+                    bid = book["bids"][0] if book["bids"] else None
+                    if bid is None or bid[0] < 0.5:
+                        continue
                 # «жирный финал»: игра закончена, p=1 — профит гарантирован,
                 # поэтому ради большой ликвидности берём и мелкие края
                 # (напр. 0.15% на $30k = $45 без риска), которые обычный

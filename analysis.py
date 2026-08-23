@@ -34,20 +34,40 @@ def _sim(a, b):
     return difflib.SequenceMatcher(None, na, nb).ratio()
 
 
-def match_game(poly_teams, games, min_ratio=0.72):
-    """ESPN-игра, обе команды которой совпадают с командами из названия события."""
+def match_game(poly_teams, games, ev_ts=None, min_ratio=0.72):
+    """ESPN-игра, обе команды которой совпали с командами из названия события.
+
+    ev_ts (datetime, UTC) — время начала события Polymarket. Без него бот
+    матчит вчерашний финал тех же команд (серии MLB — соперники играют друг
+    с другом день за днём!) с сегодняшним ещё не начавшимся событием и
+    сигналит липовый FINAL с «краем 50%». Игра должна начинаться в пределах
+    ±12 ч от события; из нескольких (даблхедер) берём ближайшую по времени.
+    """
+    best_delta, best_game = None, None
     for g in games:
         if not g["home"] or not g["away"]:
             continue
         espn_teams = [g["home"]["name"], g["away"]["name"]]
-        best = []
+        scores = []
         for pt in poly_teams:
-            scores = [( _sim(pt, et), i) for i, et in enumerate(espn_teams)]
-            scores.sort(reverse=True)
-            best.append(scores[0])
-        if all(s >= min_ratio for s, _ in best) and best[0][1] != best[1][1]:
-            return g
-    return None
+            ranked = sorted(((_sim(pt, et), i) for i, et in enumerate(espn_teams)),
+                            reverse=True)
+            scores.append(ranked[0])
+        if not (all(s >= min_ratio for s, _ in scores) and scores[0][1] != scores[1][1]):
+            continue
+        delta = float("inf")
+        if ev_ts is not None and g.get("date"):
+            try:
+                from datetime import datetime
+                gd = datetime.fromisoformat(g["date"].replace("Z", "+00:00"))
+                delta = abs((gd - ev_ts).total_seconds())
+            except ValueError:
+                pass
+        if delta > 12 * 3600:
+            continue
+        if best_delta is None or delta < best_delta:
+            best_delta, best_game = delta, g
+    return best_game
 
 
 def split_event_title(title):
