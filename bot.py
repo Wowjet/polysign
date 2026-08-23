@@ -133,11 +133,13 @@ def take_sig_fields(book, p, min_edge):
     if not plan or plan["usd"] < 1:
         return None
     pct = plan["profit"] / plan["usd"] * 100 if plan["usd"] else 0
+    fee_txt = f", комиссия ${plan['fee']:.0f}" if plan.get("fee", 0) >= 1 else ""
     levels_txt = " · ".join(f"{p_:.3f}×${usd:.0f} (+${sh * p - usd:.0f})"
                             for p_, usd, sh in plan["levels"])
     return {
         "take_text": (f"ЗАБРАТЬ ${plan['usd']:.0f} ({plan['shares']:.0f} ш. по "
-                      f"{plan['avg']:.3f}) → профит ~${plan['profit']:.0f} (+{pct:.1f}%)"),
+                      f"{plan['avg']:.3f}){fee_txt} → профит ~${plan['profit']:.0f} "
+                      f"(+{pct:.1f}%) чистыми"),
         "take_levels": levels_txt,
         "take_usd": round(plan["usd"], 2),
         "take_profit": round(plan["profit"], 2),
@@ -341,8 +343,9 @@ def scan(cfg, notifier, state, caches, stream=None, sports=None):
                         "market_slug": cand["market_slug"], "side": cand["side"],
                         "token": cand["token"], "ask": ask["price"], "size": ask["size"],
                         "usd": ask["usd"], "p": p, "edge": p - ask["price"],
-                        # ожидаемая прибыль: размер в шарах × эдж (usd/ask = число шаров)
-                        "profit": ask["usd"] / ask["price"] * (p - ask["price"]),
+                        # прибыль за вычетом taker-комиссии (мы всегда тейкер)
+                        "profit": ask["usd"] / ask["price"] * (p - ask["price"])
+                        - analysis.taker_fee(ask["price"], ask["usd"] / ask["price"]),
                         "detail": f"{game['home']['score']}:{game['away']['score']} "
                                   f"{game['clock']} {sport}",
                         "depth": depth_text(book, max_ask),
@@ -397,28 +400,34 @@ def scan(cfg, notifier, state, caches, stream=None, sports=None):
                     continue
                 total = sum(a["price"] for a in asks)
                 min_size = min(a["usd"] for a in asks)
-                edge = 1.0 - total
+                # край считаем ЧИСТЫМИ: taker-комиссия 0.05·p·(1−p) на каждый
+                # исход у сбалансированного набора съедает ~3%, gross-край
+                # без комиссий — иллюзия (см. analysis.TAKER_FEE_RATE)
+                fee1 = sum(analysis.taker_fee(a["price"], 1) for a in asks)
+                edge = 1.0 - total - fee1
                 if edge < arb_edge or min_size < arb_usd:
                     continue
-                # Глубокий план: берём уровни аска каждого исхода, пока средняя
-                # цена набора остаётся ≤ 1 − arb_edge (больше $ на событие,
-                # чем только лучшие аски). Требует живых снапшотов.
+                # Глубокий план: берём уровни аска каждого исхода, пока полная
+                # цена набора (цена + комиссия) ≤ 1 − arb_edge.
                 plan = None
                 if stream and stream.healthy() and all(snapshots):
                     plan = analysis.arb_take_plan(snapshots, arb_edge)
                 n_best = int(min(a["size"] for a in asks))
+                spend_best = sum(n_best * a["price"] for a in asks)
+                fee_best = sum(analysis.taker_fee(a["price"], n_best) for a in asks)
                 if plan and plan["n"] > n_best:
-                    n, spend, profit = plan["n"], plan["spend"], plan["profit"]
+                    n, spend, fee, profit = plan["n"], plan["spend"], plan["fee"], plan["profit"]
                 else:
-                    n, spend = n_best, sum(n_best * a["price"] for a in asks)
-                    profit = n - spend
+                    n, spend, fee = n_best, spend_best, fee_best
+                    profit = n - spend - fee
                 # ARB руками оправдан только когда «очень доходно»: тройной
-                # ордер не успеть, мелочь типа +1% на $300 пропускаем
+                # ордер не успеть, мелочь вроде +1% на $300 пропускаем
                 if profit < cfg.get("arb_min_profit", 0):
                     continue
                 take_text = (f"ЗАБРАТЬ {n} наборов (набор = по 1 ш. каждого исхода): "
-                             f"вложить ${spend:.0f} → гарантированно ${n} → "
-                             f"профит +${profit:.2f} (+{profit / spend * 100:.1f}%)")
+                             f"вложить ${spend:.0f} + комиссия ${fee:.0f} → "
+                             f"гарантированно ${n} → профит +${profit:.2f} "
+                             f"(+{profit / spend * 100:.1f}%) чистыми")
                 orders = " | ".join(
                     f"{c['side']}: {a['price']:.3f}×{n} ш. ≈ ${n * a['price']:.0f}"
                     for c, a in zip(gc, asks))
@@ -432,8 +441,8 @@ def scan(cfg, notifier, state, caches, stream=None, sports=None):
                     "market_slug": ",".join(c["market_slug"] or "" for c in gc),
                     "side": side, "token": "",
                     "ask": total, "size": 0, "usd": min_size, "p": 1.0,
-                    "edge": edge, "profit": profit,
-                    "detail": f"сумма асков {total:.3f}",
+                        "edge": edge, "profit": profit,
+                        "detail": f"сумма асков {total:.3f}, чистыми {edge*100:.1f}%",
                     "take_text": take_text, "take_levels": orders, "links": links,
                     "take_usd": round(spend, 2), "take_profit": round(profit, 2),
                     "fat": profit >= cfg.get("fat_profit", 100),

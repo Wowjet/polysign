@@ -105,7 +105,9 @@ def main():
             res = "..."
         if res == "WIN":
             n_win += 1
-            pnl += (1 - s["ask"]) / s["ask"]
+            # чистыми: с $1 покупаем 1/ask шаров, каждый приносит (1−ask);
+            # taker-комиссия 0.05·ask·(1−ask) за шар = 0.05·(1−ask) на $1
+            pnl += (1 - s["ask"]) / s["ask"] - 0.05 * (1 - s["ask"])
         elif res == "LOSE":
             n_lose += 1
             pnl -= 1.0

@@ -6,6 +6,17 @@ import re
 import unicodedata
 from functools import lru_cache
 
+# Taker-комиссия Polymarket на спорт: fee = шары × 0.05 × p × (1−p)
+# (docs.polymarket.com/trading/fees; платит только тейкер, мы всегда тейкер).
+# Критично для ARB: у сбалансированного набора 0.33+0.33+0.33 комиссия
+# 3.3¢ с набора — «край 1%» без учёта комиссий на самом деле убыток.
+TAKER_FEE_RATE = 0.05
+
+
+def taker_fee(price, shares):
+    """Комиссия тейкера за покупку `shares` шаров по цене `price`."""
+    return shares * TAKER_FEE_RATE * price * (1.0 - price)
+
 
 @lru_cache(maxsize=4096)
 def _norm_name(s):
@@ -244,9 +255,12 @@ def take_plan(book, p, min_edge, max_levels=5):
         return None
     usd = sum(l[1] for l in levels)
     shares = sum(l[2] for l in levels)
+    fee = sum(taker_fee(p_, sh) for p_, _, sh in levels)
     return {"levels": levels, "usd": usd, "shares": shares,
             "avg": usd / shares if shares else 0.0,
-            "profit": shares * p - usd}
+            "fee": fee,
+            # профит уже ЗА ВЫЧЕТОМ комиссии тейкера
+            "profit": shares * p - usd - fee}
 
 
 def outcome_groups(ev):
@@ -296,10 +310,11 @@ def arb_take_plan(books, min_edge, max_levels=8):
     """Максимальный «набор» ARB по ГЛУБИНЕ стаканов всех исходов.
 
     Набор = по 1 шару каждого исхода, выплата $1 при любом исходе матча.
-    Идём по уровням асков каждого исхода, пока средняя цена набора
-    ≤ 1 − min_edge. Возвращает {n, spend, profit, avg, orders} или None.
+    Идём по уровням асков каждого исхода, пока средняя ПОЛНАЯ цена набора
+    (цена + taker-комиссия) ≤ 1 − min_edge. Возвращает {n, spend, fee,
+    profit, avg} или None; profit уже за вычетом комиссий.
     """
-    # границы n, на которых средняя цена набора меняется: концы уровней
+    # границы n, на которых полная цена набора меняется: концы уровней
     bounds = {0}
     for b in books:
         run = 0
@@ -318,14 +333,18 @@ def arb_take_plan(books, min_edge, max_levels=8):
                 ok = False
                 break
             spend += cost
-        if not ok or spend > n * (1 - min_edge):
+        if not ok:
+            break
+        fee = sum(_cum_fee(b, n, max_levels) for b in books)
+        if spend + fee > n * (1 - min_edge):
             break
         best = n
     if not best:
         return None
     spend = sum(_cum_cost(b, best, max_levels) for b in books)
-    profit = best - spend
-    return {"n": best, "spend": spend, "profit": profit,
+    fee = sum(_cum_fee(b, best, max_levels) for b in books)
+    profit = best - spend - fee
+    return {"n": best, "spend": spend, "fee": fee, "profit": profit,
             "avg": spend / best if best else 0.0}
 
 
@@ -339,6 +358,18 @@ def _cum_cost(book, n, max_levels=8):
         if left <= 0:
             return cost
     return None
+
+
+def _cum_fee(book, n, max_levels=8):
+    """Taker-комиссия за покупку ровно n шаров по уровням аска."""
+    left, fee = n, 0.0
+    for price, size in book["asks"][:max_levels]:
+        take = min(left, size)
+        fee += taker_fee(price, take)
+        left -= take
+        if left <= 0:
+            break
+    return fee
 
 
 def league_for_series(series_slug, mapping):
