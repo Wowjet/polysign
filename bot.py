@@ -122,6 +122,13 @@ def depth_text(book, max_price, max_levels=3):
     return f"аск: {parts or '—'}{more} | {bid_txt}"
 
 
+def _uncrossed(book, ask_price):
+    """Признак небитого стакана: аск не ниже лучшего бида. «Перекрещенный»
+    стакан (бид 0.9 при аске 0.1) в реальном рынке невозможен — значит,
+    снапшот мусорный/устаревший, сигналить по нему нельзя."""
+    return not (book and book["bids"] and book["bids"][0][0] >= ask_price)
+
+
 def take_sig_fields(book, p, min_edge):
     """Готовые поля «плана захода» для одиночного сигнала (FINAL/LIVE/BOOK-ONLY).
 
@@ -341,7 +348,8 @@ def scan(cfg, notifier, state, caches, stream=None, sports=None):
                     take = take_sig_fields(book, 1.0, cfg.get("big_final_min_edge", 0.001))
                 take = take or {}
                 normal_ok = (ask["price"] <= max_ask and p - ask["price"] >= min_edge
-                             and ask["usd"] >= min_usd)
+                             and ask["usd"] >= min_usd
+                             and _uncrossed(book, ask["price"]))
                 fat_ok = (final_done and take.get("take_profit", 0) >= fat_profit
                           and ask["price"] <= cfg.get("big_final_max_ask", 0.9995))
                 if normal_ok or fat_ok:
@@ -487,7 +495,8 @@ def scan(cfg, notifier, state, caches, stream=None, sports=None):
                     book = books.get([cand["token"]])[0]
                     rest_used = True
                 a = analysis.best_ask_usd(book) if book else None
-                if a and a["usd"] >= min_usd and a["price"] <= bo["max_ask"]:
+                if a and a["usd"] >= min_usd and a["price"] <= bo["max_ask"] \
+                        and _uncrossed(book, a["price"]):
                     edge_val = 1.0 - a["price"]
                     signals.append({
                         "type": "BOOK-ONLY", "title": ev["title"], "event_slug": ev["slug"],
